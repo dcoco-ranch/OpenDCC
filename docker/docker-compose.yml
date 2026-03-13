@@ -1,0 +1,60 @@
+services:
+
+  # ── Web-only image (fast build, ~3-5 min) ───────────────────────────────────
+  # Serves the Three.js/WASM viewport.  No C++ OpenDCC required.
+  # USD Python stub active on arm64; full usd-core used on amd64.
+  #
+  # Build:  docker compose build web
+  # Start:  docker compose up web
+  # URL:    http://localhost:8080
+  web:
+    build:
+      context: ../..                          # ShapeFX/
+      dockerfile: OpenDCC/docker/Dockerfile.web
+    image: opendcc-web:latest
+    container_name: opendcc-web
+    ports:
+      - "8080:8080"
+    volumes:
+      - type: bind
+        source: ${USD_STAGES_PATH:-./stages}
+        target: /data/stages
+    environment:
+      - USD_VIEWER_PATH=/opt/usd-viewer
+      - OPENDCC_STAGES_ROOT=/data/stages
+      - TF_DEBUG=0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Full C++ build (long build, ~1-2 h, amd64 only via QEMU on Apple Silicon)
+  # Compiles OpenDCC with Qt5 + USD + Hydra.
+  # Uncomment and run:  docker compose build full
+  #
+  # full:
+  #   build:
+  #     context: ../..
+  #     dockerfile: OpenDCC/docker/Dockerfile
+  #     target: runtime
+  #     platforms:
+  #       - linux/amd64
+  #   image: opendcc:latest
+  #   container_name: opendcc
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - type: bind
+  #       source: ${USD_STAGES_PATH:-./stages}
+  #       target: /data/stages
+  #     - opendcc_settings:/opt/opendcc/settings
+  #   environment:
+  #     - QT_QPA_PLATFORM=offscreen
+  #     - USD_VIEWER_PATH=/opt/usd-viewer
+  #     - OPENDCC_STAGES_ROOT=/data/stages
+  #   restart: unless-stopped
+
+volumes:
+  opendcc_settings:

@@ -1,0 +1,59 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.web  —  Fast web-UI-only image (no C++ OpenDCC compilation)
+#
+# Build context:  ShapeFX/   (parent of OpenDCC/ AND usd-viewer/)
+# Build time:     ~3-5 minutes on Apple Silicon / any modern machine
+# Platform:       native (arm64 on Apple Silicon, amd64 on Intel)
+#
+# What you get
+# ─────────────────────────────────────────────────────────────────────────────
+#   • FastAPI web server on :8080
+#   • Three.js viewport with OpenUSD WASM (full USD rendering in browser)
+#   • Outliner, Properties panel, Script Editor
+#   • WebSocket live-reload on stage changes
+#   • USD Python bindings via pip (usd-core) on amd64;
+#     stub cube scene served on arm64 (WASM still renders it fully)
+#   • /api/stage/export.usda  →  live stage or stub cube
+#   • /api/prims, /api/prim/*, /api/execute (script runner)
+#
+# Build & run:
+#   cd ShapeFX/
+#   docker build -f OpenDCC/docker/Dockerfile.web -t opendcc-web:latest .
+#   docker run -p 8080:8080 -v $(pwd)/stages:/data/stages opendcc-web:latest
+#   open http://localhost:8080
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FROM python:3.11-slim
+
+# ── System dependencies ───────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python web dependencies ───────────────────────────────────────────────────
+# usd-core: USD Python bindings from PyPI (amd64 only; skipped gracefully on arm64)
+COPY OpenDCC/web/requirements_web.txt /tmp/requirements_web.txt
+RUN pip install --no-cache-dir -r /tmp/requirements_web.txt && \
+    pip install --no-cache-dir usd-core || \
+    echo "⚠  usd-core not available on this arch — server runs in stub mode (cube scene)"
+
+# ── Web server ────────────────────────────────────────────────────────────────
+COPY OpenDCC/web/ /app/web/
+
+# ── needle-tools usd-wasm ─────────────────────────────────────────────────────
+#   emHdBindings.wasm  ~16 MB  (OpenUSD compiled to WebAssembly)
+#   ThreeJsRenderDelegate.js   (Hydra → Three.js bridge)
+COPY usd-viewer/usd-wasm/src     /opt/usd-viewer/usd-wasm/src
+COPY usd-viewer/public/modules   /opt/usd-viewer/public/modules
+
+# ── Environment ──────────────────────────────────────────────────────────────
+ENV USD_VIEWER_PATH=/opt/usd-viewer
+ENV OPENDCC_STAGES_ROOT=/data/stages
+# No display / Qt needed (web-only image)
+ENV QT_QPA_PLATFORM=offscreen
+
+WORKDIR /app
+EXPOSE 8080
+
+CMD ["python3", "/app/web/server.py", "--host", "0.0.0.0", "--port", "8080"]

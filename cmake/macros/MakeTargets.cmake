@@ -1,6 +1,11 @@
 if(WIN32)
     set(OS_ENV_SEPARATOR ";")
     set(OS_LIBRARY_ENV_NAME "PATH")
+elseif(APPLE)
+    # macOS uses DYLD_LIBRARY_PATH instead of LD_LIBRARY_PATH
+    # Note: SIP may restrict DYLD_* in child processes. Use @rpath for installed bundles.
+    set(OS_ENV_SEPARATOR ":")
+    set(OS_LIBRARY_ENV_NAME "DYLD_LIBRARY_PATH")
 else()
     set(OS_ENV_SEPARATOR ":")
     set(OS_LIBRARY_ENV_NAME "LD_LIBRARY_PATH")
@@ -14,6 +19,10 @@ function(get_usd_env EXTRA_ENVIRONMENT USD_ENVIRONMENT_VAR)
     list(APPEND _result "${USD_GENSCHEMA_DIR}")
     list(APPEND _result "${EXTRA_ENVIRONMENT}") # ????
     if(WIN32)
+        list(APPEND _result "$ENV{PATH}")
+    elseif(APPLE)
+        list(APPEND _result "$ENV{DYLD_LIBRARY_PATH}")
+        list(APPEND _result "$ENV{DYLD_FRAMEWORK_PATH}")
         list(APPEND _result "$ENV{PATH}")
     else()
         list(APPEND _result "$ENV{LD_LIBRARY_PATH}")
@@ -40,7 +49,7 @@ function(
     execute_process(
         COMMAND
             ${CMAKE_COMMAND} -E env "PYTHONPATH=${USD_LIBRARY_DIR}/python${OS_ENV_SEPARATOR}$ENV{PYTHONPATH}"
-            "LD_LIBRARY_PATH=${USD_ENV}${OS_ENV_SEPARATOR}" "PATH=${USD_ENV}${OS_ENV_SEPARATOR}" "${PYTHON_EXECUTABLE}"
+            "${OS_LIBRARY_ENV_NAME}=${USD_ENV}${OS_ENV_SEPARATOR}" "PATH=${USD_ENV}${OS_ENV_SEPARATOR}" "${PYTHON_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/cmake/macros/parse_usd_schema.py" "${USD_GENSCHEMA_SCRIPT}" "${SCHEMA_FILE}"
             "${OUTPUT_DIR}"
         RESULT_VARIABLE _exit_code
@@ -419,19 +428,17 @@ function(opendcc_make_usd_schema TARGET_NAME)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_output_dir}"
         COMMAND
             ${CMAKE_COMMAND} -E env "PYTHONPATH=${USD_LIBRARY_DIR}/python${OS_ENV_SEPARATOR}$ENV{PYTHONPATH}"
-            "LD_LIBRARY_PATH=${_usd_env}${OS_ENV_SEPARATOR}" "PATH=${_usd_env}${OS_ENV_SEPARATOR}"
+            "${OS_LIBRARY_ENV_NAME}=${_usd_env}${OS_ENV_SEPARATOR}" "PATH=${_usd_env}${OS_ENV_SEPARATOR}"
             "${_pxr_path_name}=${_pxr_deps}" ${_run_pre_gen_script}
         COMMAND
             ${CMAKE_COMMAND} -E env "PYTHONPATH=${USD_LIBRARY_DIR}/python${OS_ENV_SEPARATOR}$ENV{PYTHONPATH}"
-            "LD_LIBRARY_PATH=${_usd_env}${OS_ENV_SEPARATOR}" "PATH=${_usd_env}${OS_ENV_SEPARATOR}"
+            "${OS_LIBRARY_ENV_NAME}=${_usd_env}${OS_ENV_SEPARATOR}" "PATH=${_usd_env}${OS_ENV_SEPARATOR}"
             "${_pxr_path_name}=${_pxr_deps}" ${USD_GENSCHEMA} "${_schema_file}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_output_dir}/plugInfo.json ${_output_dir}/plugInfo.json.in
         COMMAND
             ${CMAKE_COMMAND} -E env "PYTHONPATH=${USD_LIBRARY_DIR}/python${OS_ENV_SEPARATOR}$ENV{PYTHONPATH}"
-            "LD_LIBRARY_PATH=${_usd_env}${OS_ENV_SEPARATOR}" "PATH=${_usd_env}${OS_ENV_SEPARATOR}"
+            "${OS_LIBRARY_ENV_NAME}=${_usd_env}${OS_ENV_SEPARATOR}" "PATH=${_usd_env}${OS_ENV_SEPARATOR}"
             "${_pxr_path_name}=${_pxr_deps}" ${_run_after_gen_script}
-        COMMAND
-            ${CMAKE_COMMAND} -DPLUG_INFO_ROOT=${PLUG_INFO_ROOT} -DPLUG_INFO_RESOURCE_PATH=${PLUG_INFO_RESOURCE_PATH}
             -DPLUG_INFO_LIBRARY_PATH=${PLUG_INFO_LIBRARY_PATH} -P "${CMAKE_CURRENT_BINARY_DIR}/configure_plugInfo.cmake"
         WORKING_DIRECTORY "${_output_dir}")
 
