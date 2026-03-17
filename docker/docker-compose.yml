@@ -56,5 +56,87 @@ services:
   #     - OPENDCC_STAGES_ROOT=/data/stages
   #   restart: unless-stopped
 
+  # ── Web-only + GPU  (nvidia container toolkit required) ─────────────────────
+  # Serves the Three.js/WASM viewport with GPU-accelerated EGL rendering.
+  # Requires: nvidia-container-toolkit + Docker >= 19.03
+  #
+  # Build:  docker compose build web-gpu
+  # Start:  docker compose up web-gpu
+  # URL:    http://localhost:8081
+  web-gpu:
+    build:
+      context: ../..
+      dockerfile: OpenDCC/docker/Dockerfile.web
+    image: opendcc-web:latest
+    container_name: opendcc-web-gpu
+    ports:
+      - "8081:8080"
+    volumes:
+      - type: bind
+        source: ${USD_STAGES_PATH:-./stages}
+        target: /data/stages
+    environment:
+      - USD_VIEWER_PATH=/opt/usd-viewer
+      - OPENDCC_STAGES_ROOT=/data/stages
+      - TF_DEBUG=0
+      # GPU / EGL headless rendering
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute,display
+      - __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d
+      - EGL_PLATFORM=device
+      # Keep Qt in offscreen mode; GPU is used by the renderer subprocess
+      - QT_QPA_PLATFORM=offscreen
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, graphics, compute, utility]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Full C++ build + GPU ──────────────────────────────────────────────────────
+  # Compiles OpenDCC with Qt5 + USD + Hydra and enables GPU rendering.
+  # Requires: nvidia-container-toolkit + Docker >= 19.03, amd64 only.
+  #
+  # Build:  docker compose build full-gpu
+  # Start:  docker compose up full-gpu
+  # full-gpu:
+  #   build:
+  #     context: ../..
+  #     dockerfile: OpenDCC/docker/Dockerfile.gpu
+  #     target: runtime
+  #     platforms:
+  #       - linux/amd64
+  #   image: opendcc-gpu:latest
+  #   container_name: opendcc-gpu
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - type: bind
+  #       source: ${USD_STAGES_PATH:-./stages}
+  #       target: /data/stages
+  #     - opendcc_settings:/opt/opendcc/settings
+  #   environment:
+  #     - QT_QPA_PLATFORM=offscreen
+  #     - USD_VIEWER_PATH=/opt/usd-viewer
+  #     - OPENDCC_STAGES_ROOT=/data/stages
+  #     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+  #     - NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute,display
+  #     - EGL_PLATFORM=device
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu, graphics, compute, utility]
+  #   restart: unless-stopped
+
 volumes:
   opendcc_settings:

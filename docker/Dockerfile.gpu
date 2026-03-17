@@ -1,0 +1,186 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.gpu  —  OpenDCC full C++ build with NVIDIA GPU rendering
+#
+# Build context:  ShapeFX/   (parent of OpenDCC/ AND usd-viewer/)
+# Build with:
+#   docker compose -f OpenDCC/docker/docker-compose.yml build full-gpu
+# or:
+#   docker build -f OpenDCC/docker/Dockerfile.gpu \
+#                -t opendcc-gpu:latest \
+#                ../..
+#
+# Requirements (host):
+#   • NVIDIA driver >= 525 (for CUDA 12.x / OpenGL 4.6)
+#   • nvidia-container-toolkit  (https://docs.nvidia.com/datacenter/cloud-native/)
+#   • Docker >= 19.03
+#
+# Stages:
+#   builder        – ASWF CY2022 build environment (USD, Qt5, PySide2, Python 3.9)
+#   opendcc_build  – compiles OpenDCC with CMake/Ninja
+#   runtime        – NVIDIA OpenGL runtime + OpenDCC binaries + web server
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 – dependency builder  (identical to Dockerfile)
+# ─────────────────────────────────────────────────────────────────────────────
+FROM aswf/ci-base:2022.1 AS builder
+
+RUN sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|g' \
+        -e 's|^#baseurl=http://mirror\.centos\.org|baseurl=http://vault.centos.org|g' \
+        /etc/yum.repos.d/CentOS-*.repo && \
+    yum clean all && yum makecache fast
+
+RUN yum install -y \
+        zeromq-devel \
+        glew-devel \
+        eigen3-devel \
+        bullet-devel \
+        graphviz-devel \
+    && yum clean all
+
+ARG DOCTEST_VERSION=2.4.11
+RUN git clone --depth 1 --branch v${DOCTEST_VERSION} \
+        https://github.com/doctest/doctest.git /tmp/doctest && \
+    cmake -S /tmp/doctest -B /tmp/doctest/build \
+          -DDOCTEST_WITH_TESTS=OFF \
+          -DCMAKE_INSTALL_PREFIX=/opt/deps && \
+    cmake --build /tmp/doctest/build --target install && \
+    rm -rf /tmp/doctest
+
+ARG ADS_VERSION=3.8.2
+RUN git clone --depth 1 --branch ${ADS_VERSION} \
+        https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System.git /tmp/ads && \
+    cmake -S /tmp/ads -B /tmp/ads/build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH=/usr/local \
+          -DCMAKE_INSTALL_PREFIX=/opt/deps \
+          -DBUILD_EXAMPLES=OFF && \
+    cmake --build /tmp/ads/build -j$(nproc) --target install && \
+    rm -rf /tmp/ads
+
+ARG SENTRY_VERSION=0.6.6
+RUN git clone --depth 1 --branch ${SENTRY_VERSION} \
+        https://github.com/getsentry/sentry-native.git /tmp/sentry && \
+    cmake -S /tmp/sentry -B /tmp/sentry/build \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DSENTRY_BACKEND=breakpad \
+          -DCMAKE_INSTALL_PREFIX=/opt/deps && \
+    cmake --build /tmp/sentry/build -j$(nproc) --target install && \
+    rm -rf /tmp/sentry
+
+ARG OPENMESH_VERSION=9.0
+RUN curl -fsSL https://www.graphics.rwth-aachen.de/media/openmesh_static/Releases/${OPENMESH_VERSION}/OpenMesh-${OPENMESH_VERSION}.tar.bz2 \
+        | tar -xj -C /tmp && \
+    cmake -S /tmp/OpenMesh-${OPENMESH_VERSION} -B /tmp/openmesh_build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_APPS=OFF \
+          -DCMAKE_INSTALL_PREFIX=/opt/deps && \
+    cmake --build /tmp/openmesh_build -j$(nproc) --target install && \
+    rm -rf /tmp/OpenMesh-${OPENMESH_VERSION} /tmp/openmesh_build
+
+RUN git clone --depth 1 https://github.com/libigl/libigl.git /opt/deps/include/igl_src && \
+    ln -s /opt/deps/include/igl_src/include/igl /opt/deps/include/igl
+
+COPY OpenDCC/web/requirements_web.txt /tmp/requirements_web.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements_web.txt
+RUN pip3 install --no-cache-dir pybind11
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 – OpenDCC build
+# ─────────────────────────────────────────────────────────────────────────────
+FROM builder AS opendcc_build
+
+WORKDIR /src
+COPY OpenDCC/ /src/OpenDCC
+
+RUN cmake -S /src/OpenDCC -B /src/build \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/opt/opendcc \
+    -DUSD_ROOT=/usr/local \
+    -DCMAKE_PREFIX_PATH="/usr/local;/opt/deps" \
+    -DPython3_ROOT_DIR=/usr \
+    -DDCC_PYSIDE_CMAKE_FIND=OFF \
+    -DSHIBOKEN_CLANG_INSTALL_DIR=/usr/lib/llvm-13 \
+    -Dqtadvanceddocking_DIR=/opt/deps/lib/cmake/qtadvanceddocking \
+    -Dsentry_DIR=/opt/deps/lib/cmake/sentry \
+    -Ddoctest_DIR=/opt/deps/lib/cmake/doctest \
+    -DOpenMesh_DIR=/opt/deps/share/OpenMesh/cmake \
+    # GPU-capable renderer backends — supply SDK paths via build args if available
+    -DDCC_BUILD_ARNOLD_SUPPORT=OFF \
+    -DDCC_USD_FALLBACK_PROXY_BUILD_ARNOLD_USD=OFF \
+    -DDCC_BUILD_RENDERMAN_SUPPORT=OFF \
+    # Cycles has GPU support (CUDA/HIP); enable when Cycles SDK is present
+    -DDCC_BUILD_CYCLES_SUPPORT=OFF \
+    -DDCC_USD_FALLBACK_PROXY_BUILD_CYCLES=OFF \
+    -DDCC_EMBEDDED_PYTHON_HOME=ON \
+    -DDCC_BUILD_RENDER_VIEW=ON \
+    -DDCC_BUILD_TESTS=OFF && \
+    ninja -j$(nproc) install
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 – runtime image with NVIDIA OpenGL support
+#
+# nvidia/opengl:1.2-glvnd-runtime-ubuntu20.04 provides:
+#   • libGL / libEGL via libglvnd
+#   • EGL device enumeration (/dev/nvidia* from host)
+#   • No CUDA (smaller image); add nvidia/cuda base if GPGPU compute is needed
+# ─────────────────────────────────────────────────────────────────────────────
+FROM nvidia/opengl:1.2-glvnd-runtime-ubuntu20.04 AS runtime
+
+# ── Install OpenDCC runtime system dependencies ───────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.9 \
+        python3-pip \
+        libzeromq5 \
+        libglew2.1 \
+        libgl1 \
+        libegl1 \
+        libgles2 \
+        # libvulkan1 is useful if Hydra Vulkan delegate is ever enabled
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── OpenDCC compiled output ───────────────────────────────────────────────────
+COPY --from=opendcc_build /opt/opendcc /opt/opendcc
+COPY --from=opendcc_build /opt/deps    /opt/deps
+# Copy USD / Qt runtime libs from the ASWF build environment
+COPY --from=opendcc_build /usr/local/lib /usr/local/lib
+
+# ── Web server sources ────────────────────────────────────────────────────────
+COPY OpenDCC/web/ /opt/opendcc/web/
+
+# ── needle-tools usd-wasm ─────────────────────────────────────────────────────
+COPY usd-viewer/usd-wasm/src   /opt/usd-viewer/usd-wasm/src
+COPY usd-viewer/public/modules /opt/usd-viewer/public/modules
+
+# ── Python web dependencies ───────────────────────────────────────────────────
+COPY OpenDCC/web/requirements_web.txt /tmp/requirements_web.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements_web.txt
+
+# ── Environment ───────────────────────────────────────────────────────────────
+ENV PYTHONPATH=/opt/opendcc/lib/python3.9/site-packages:/usr/local/lib/python3.9/site-packages
+ENV LD_LIBRARY_PATH=/opt/opendcc/lib:/opt/deps/lib:/usr/local/lib
+ENV PXR_PLUGINPATH_NAME=/opt/opendcc/plugin/usd:/opt/opendcc/plugin/opendcc
+ENV OPENDCC_ROOT=/opt/opendcc
+ENV USD_VIEWER_PATH=/opt/usd-viewer
+
+# ── GPU / EGL headless rendering ──────────────────────────────────────────────
+# Qt uses EGL when QT_QPA_PLATFORM=offscreen on NVIDIA; no X11 display required.
+# The NVIDIA container toolkit passes /dev/nvidia* devices at runtime.
+ENV QT_QPA_PLATFORM=offscreen
+ENV DISPLAY=
+# Force Mesa / libglvnd EGL device backend (picks up NVIDIA EGL ICD automatically)
+ENV EGL_PLATFORM=device
+# Required by NVIDIA container runtime — overridable at docker run / compose
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute,display
+
+WORKDIR /opt/opendcc
+EXPOSE 8080
+
+CMD ["python3", "/opt/opendcc/web/server.py", "--host", "0.0.0.0", "--port", "8080"]

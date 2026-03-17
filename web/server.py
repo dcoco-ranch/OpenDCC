@@ -27,8 +27,11 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
+import shutil
+import tempfile
+
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -364,6 +367,63 @@ async def stage_save():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/api/stage/upload")
+async def stage_upload(file: UploadFile = File(...)):
+    """
+    Upload a USD file (.usda / .usdc / .usdz) to the server's stages root
+    and immediately open it as the active stage.
+    """
+    allowed_suffixes = {".usda", ".usdc", ".usd", ".usdz"}
+    suffix = Path(file.filename).suffix.lower() if file.filename else ""
+    if suffix not in allowed_suffixes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}'. Accepted: {sorted(allowed_suffixes)}",
+        )
+
+    stages_root = Path(os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages"))
+    stages_root.mkdir(parents=True, exist_ok=True)
+    dest = stages_root / (file.filename or "uploaded.usda")
+
+    # Write upload to a temp file first to avoid partial writes
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(stages_root), suffix=suffix)
+    try:
+        with os.fdopen(tmp_fd, "wb") as tmp_f:
+            shutil.copyfileobj(file.file, tmp_f)
+        shutil.move(tmp_path, str(dest))
+    except Exception as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+
+    if _opendcc_available:
+        try:
+            _session.open_stage(str(dest))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"File saved but could not open stage: {exc}")
+
+    await _conns.broadcast({"event": "stage_opened", "path": str(dest)})
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True, "path": str(dest)}
+
+
+@app.get("/api/stages")
+async def stages_list():
+    """List USD files available in OPENDCC_STAGES_ROOT."""
+    stages_root = Path(os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages"))
+    if not stages_root.exists():
+        return {"stages": []}
+    usd_exts = {".usda", ".usdc", ".usd", ".usdz"}
+    files = sorted(
+        str(p.relative_to(stages_root))
+        for p in stages_root.rglob("*")
+        if p.is_file() and p.suffix.lower() in usd_exts
+    )
+    return {"stages_root": str(stages_root), "stages": files}
+
+
 @app.get("/api/stage/info")
 async def stage_info():
     stage = _current_stage()
@@ -488,6 +548,156 @@ async def prim_set_attr(prim_path: str, req: _AttrSetReq):
         "attribute": req.attribute,
     })
     return {"ok": True}
+
+
+# ── Undo / Redo ───────────────────────────────────────────────────────────────
+
+@app.post("/api/undo")
+async def undo():
+    """Undo the last USD mutation via the OpenDCC undo stack."""
+    if not _opendcc_available:
+        return {"ok": True, "stub": True}
+    try:
+        _app_core.get_undo_stack().undo()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    await _conns.broadcast({"event": "scene_changed", "action": "undo"})
+    return {"ok": True}
+
+
+@app.post("/api/redo")
+async def redo():
+    """Redo the last undone USD mutation."""
+    if not _opendcc_available:
+        return {"ok": True, "stub": True}
+    try:
+        _app_core.get_undo_stack().redo()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    await _conns.broadcast({"event": "scene_changed", "action": "redo"})
+    return {"ok": True}
+
+
+# ── Timeline / Animation playback ─────────────────────────────────────────────
+
+@app.get("/api/timeline")
+async def timeline_info():
+    """Return the current stage time code range and active frame."""
+    stage = _current_stage()
+    if not stage:
+        return {"start": 1.0, "end": 1.0, "current": 1.0, "fps": 24.0}
+    return {
+        "start":   stage.GetStartTimeCode(),
+        "end":     stage.GetEndTimeCode(),
+        "current": stage.GetStartTimeCode(),
+        "fps":     stage.GetFramesPerSecond(),
+    }
+
+
+class _TimelineSetReq(BaseModel):
+    frame: float
+
+
+@app.post("/api/timeline/frame")
+async def timeline_set_frame(req: _TimelineSetReq):
+    """Seek the active time code (used by the web playback controls)."""
+    if not _opendcc_available:
+        return {"ok": True, "stub": True, "frame": req.frame}
+    try:
+        # Notify all connected clients — actual time sampling is done in WASM
+        await _conns.broadcast({"event": "timeline_frame", "frame": req.frame})
+        return {"ok": True, "frame": req.frame}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Prim creation / deletion ───────────────────────────────────────────────────
+
+class _PrimCreateReq(BaseModel):
+    path:      str
+    type_name: str = "Xform"
+
+
+@app.post("/api/prim")
+async def prim_create(req: _PrimCreateReq):
+    """Create a new USD prim at the given path with the specified type."""
+    if not _opendcc_available:
+        return {"ok": True, "stub": True}
+    stage = _current_stage()
+    if not stage:
+        raise HTTPException(status_code=400, detail="No stage loaded")
+
+    from pxr import Sdf, UsdGeom
+    path = Sdf.Path(req.path)
+    if not path.IsAbsolutePath():
+        raise HTTPException(status_code=400, detail="path must be absolute (e.g. /World/Mesh)")
+
+    if stage.GetPrimAtPath(path).IsValid():
+        raise HTTPException(status_code=409, detail=f"Prim already exists: {path}")
+
+    try:
+        prim = stage.DefinePrim(path, req.type_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await _conns.broadcast({"event": "scene_changed", "primPath": str(path), "action": "created"})
+    return {"ok": True, **_prim_to_dict(prim)}
+
+
+@app.delete("/api/prim/{prim_path:path}")
+async def prim_delete(prim_path: str):
+    """Remove a USD prim from the stage."""
+    if not _opendcc_available:
+        return {"ok": True, "stub": True}
+    stage = _current_stage()
+    if not stage:
+        raise HTTPException(status_code=400, detail="No stage loaded")
+
+    from pxr import Sdf
+    full_path = "/" + prim_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+    try:
+        stage.RemovePrim(Sdf.Path(full_path))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await _conns.broadcast({"event": "scene_changed", "primPath": full_path, "action": "deleted"})
+    return {"ok": True, "deleted": full_path}
+
+
+class _VisibilityReq(BaseModel):
+    visible: bool
+
+
+@app.post("/api/prim/{prim_path:path}/visibility")
+async def prim_set_visibility(prim_path: str, req: _VisibilityReq):
+    """Toggle UsdGeom visibility on a prim."""
+    if not _opendcc_available:
+        return {"ok": True, "stub": True}
+    stage = _current_stage()
+    if not stage:
+        raise HTTPException(status_code=400, detail="No stage loaded")
+
+    from pxr import Sdf, UsdGeom
+    full_path = "/" + prim_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+    try:
+        imageable = UsdGeom.Imageable(prim)
+        if req.visible:
+            imageable.MakeVisible()
+        else:
+            imageable.MakeInvisible()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await _conns.broadcast({"event": "scene_changed", "primPath": full_path, "action": "visibility"})
+    return {"ok": True, "path": full_path, "visible": req.visible}
 
 
 # ── Python script execution ───────────────────────────────────────────────────
