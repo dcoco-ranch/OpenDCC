@@ -20,7 +20,7 @@
 #   Boost 1.76, TBB 2020.3, OCIO 2.1, OIIO 2.3, OpenEXR 3.1,
 #   OpenSubdiv 3.4  (VFX Reference Platform 2022)
 # ─────────────────────────────────────────────────────────────────────────────
-FROM aswf/ci-base:2022.1 AS builder
+FROM aswf/ci-usd:2022.1 AS builder
 
 # CentOS 7 reached EOL June 2024 — mirrorlist.centos.org is dead.
 # Redirect all base/extras/updates repos to vault.centos.org archive.
@@ -49,6 +49,8 @@ RUN git clone --depth 1 --branch v${DOCTEST_VERSION} \
     rm -rf /tmp/doctest
 
 # ── Qt Advanced Docking System ────────────────────────────────────────────────
+# NOTE: QEMU x86_64 emulation on ARM can cause random segfaults in Qt MOC.
+# Build with -j1 and retry once if needed.
 ARG ADS_VERSION=3.8.2
 RUN git clone --depth 1 --branch ${ADS_VERSION} \
         https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System.git /tmp/ads && \
@@ -57,18 +59,22 @@ RUN git clone --depth 1 --branch ${ADS_VERSION} \
           -DCMAKE_PREFIX_PATH=/usr/local \
           -DCMAKE_INSTALL_PREFIX=/opt/deps \
           -DBUILD_EXAMPLES=OFF && \
-    cmake --build /tmp/ads/build -j$(nproc) --target install && \
+    (cmake --build /tmp/ads/build -j1 --target install || \
+     cmake --build /tmp/ads/build -j1 --target install) && \
     rm -rf /tmp/ads
 
 # ── Sentry-native ─────────────────────────────────────────────────────────────
+# Use 'inproc' backend to avoid crashpad/breakpad build complexity under QEMU
 ARG SENTRY_VERSION=0.6.6
-RUN git clone --depth 1 --branch ${SENTRY_VERSION} \
+RUN git clone --depth 1 --branch ${SENTRY_VERSION} --recurse-submodules \
         https://github.com/getsentry/sentry-native.git /tmp/sentry && \
     cmake -S /tmp/sentry -B /tmp/sentry/build \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DSENTRY_BACKEND=breakpad \
+          -DSENTRY_BACKEND=inproc \
+          -DSENTRY_BUILD_TESTS=OFF \
+          -DSENTRY_BUILD_EXAMPLES=OFF \
           -DCMAKE_INSTALL_PREFIX=/opt/deps && \
-    cmake --build /tmp/sentry/build -j$(nproc) --target install && \
+    cmake --build /tmp/sentry/build -j1 --target install && \
     rm -rf /tmp/sentry
 
 # ── OpenMesh ──────────────────────────────────────────────────────────────────
@@ -79,7 +85,7 @@ RUN curl -fsSL https://www.graphics.rwth-aachen.de/media/openmesh_static/Release
           -DCMAKE_BUILD_TYPE=Release \
           -DBUILD_APPS=OFF \
           -DCMAKE_INSTALL_PREFIX=/opt/deps && \
-    cmake --build /tmp/openmesh_build -j$(nproc) --target install && \
+    cmake --build /tmp/openmesh_build -j2 --target install && \
     rm -rf /tmp/OpenMesh-${OPENMESH_VERSION} /tmp/openmesh_build
 
 # ── libigl (header-only) ──────────────────────────────────────────────────────
@@ -92,6 +98,24 @@ COPY OpenDCC/web/requirements_web.txt /tmp/requirements_web.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements_web.txt
 
 RUN pip3 install --no-cache-dir pybind11
+
+# ── OpenUSD 22.05 (VFX Platform 2022) ────────────────────────────────────────
+# ci-usd has all deps but NOT USD itself — build it here.
+ARG USD_VERSION=v22.05
+RUN git clone --depth 1 --branch ${USD_VERSION} \
+        https://github.com/PixarAnimationStudios/OpenUSD.git /tmp/usd_src && \
+    python3 /tmp/usd_src/build_scripts/build_usd.py \
+        --python \
+        --usd-imaging \
+        --opencolorio \
+        --openimageio \
+        --no-examples \
+        --no-tutorials \
+        --no-docs \
+        --no-usdview \
+        -j 2 \
+        /opt/usd && \
+    rm -rf /tmp/usd_src /opt/usd/src /opt/usd/build
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,8 +131,8 @@ RUN cmake -S /src/OpenDCC -B /src/build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/opt/opendcc \
-    -DUSD_ROOT=/usr/local \
-    -DCMAKE_PREFIX_PATH="/usr/local;/opt/deps" \
+    -DUSD_ROOT=/opt/usd \
+    -DCMAKE_PREFIX_PATH="/usr/local;/opt/deps;/opt/usd" \
     -DPython3_ROOT_DIR=/usr \
     -DDCC_PYSIDE_CMAKE_FIND=OFF \
     -DSHIBOKEN_CLANG_INSTALL_DIR=/usr/lib/llvm-13 \
@@ -123,13 +147,13 @@ RUN cmake -S /src/OpenDCC -B /src/build \
     -DDCC_EMBEDDED_PYTHON_HOME=ON \
     -DDCC_BUILD_RENDER_VIEW=ON \
     -DDCC_BUILD_TESTS=OFF && \
-    ninja -j$(nproc) install
+    ninja -j2 install
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3 – runtime image
 # ─────────────────────────────────────────────────────────────────────────────
-FROM aswf/ci-base:2022.1 AS runtime
+FROM aswf/ci-usd:2022.1 AS runtime
 
 # Same CentOS 7 EOL vault fix needed in the runtime stage
 RUN sed -i \
@@ -141,6 +165,7 @@ RUN sed -i \
 # ── OpenDCC compiled output ───────────────────────────────────────────────────
 COPY --from=opendcc_build /opt/opendcc /opt/opendcc
 COPY --from=opendcc_build /opt/deps    /opt/deps
+COPY --from=opendcc_build /opt/usd     /opt/usd
 
 # ── Web server sources ────────────────────────────────────────────────────────
 COPY OpenDCC/web/ /opt/opendcc/web/
@@ -163,9 +188,9 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements_web.txt && \
     yum clean all
 
 # ── Environment ──────────────────────────────────────────────────────────────
-ENV PYTHONPATH=/opt/opendcc/lib/python3.9/site-packages:/usr/local/lib/python3.9/site-packages
-ENV LD_LIBRARY_PATH=/opt/opendcc/lib:/opt/deps/lib:/usr/local/lib
-ENV PXR_PLUGINPATH_NAME=/opt/opendcc/plugin/usd:/opt/opendcc/plugin/opendcc
+ENV PYTHONPATH=/opt/opendcc/lib/python3.9/site-packages:/opt/usd/lib/python:/usr/local/lib/python3.9/site-packages
+ENV LD_LIBRARY_PATH=/opt/opendcc/lib:/opt/deps/lib:/opt/usd/lib:/usr/local/lib:/usr/local/lib64
+ENV PXR_PLUGINPATH_NAME=/opt/opendcc/plugin/usd:/opt/opendcc/plugin/opendcc:/opt/usd/lib/usd
 ENV OPENDCC_ROOT=/opt/opendcc
 
 # Path where server.py looks for the usd-wasm src and es-module-shims

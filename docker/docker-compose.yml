@@ -32,29 +32,29 @@ services:
 
   # ── Full C++ build (long build, ~1-2 h, amd64 only via QEMU on Apple Silicon)
   # Compiles OpenDCC with Qt5 + USD + Hydra.
-  # Uncomment and run:  docker compose build full
-  #
-  # full:
-  #   build:
-  #     context: ../..
-  #     dockerfile: OpenDCC/docker/Dockerfile
-  #     target: runtime
-  #     platforms:
-  #       - linux/amd64
-  #   image: opendcc:latest
-  #   container_name: opendcc
-  #   ports:
-  #     - "8080:8080"
-  #   volumes:
-  #     - type: bind
-  #       source: ${USD_STAGES_PATH:-./stages}
-  #       target: /data/stages
-  #     - opendcc_settings:/opt/opendcc/settings
-  #   environment:
-  #     - QT_QPA_PLATFORM=offscreen
-  #     - USD_VIEWER_PATH=/opt/usd-viewer
-  #     - OPENDCC_STAGES_ROOT=/data/stages
-  #   restart: unless-stopped
+  # Build:  docker compose build full
+  # Start:  docker compose up full
+  full:
+    build:
+      context: ../..
+      dockerfile: OpenDCC/docker/Dockerfile
+      target: runtime
+      platforms:
+        - linux/amd64
+    image: opendcc:latest
+    container_name: opendcc
+    ports:
+      - "8081:8080"
+    volumes:
+      - type: bind
+        source: ${USD_STAGES_PATH:-./stages}
+        target: /data/stages
+      - opendcc_settings:/opt/opendcc/settings
+    environment:
+      - QT_QPA_PLATFORM=offscreen
+      - USD_VIEWER_PATH=/opt/usd-viewer
+      - OPENDCC_STAGES_ROOT=/data/stages
+    restart: unless-stopped
 
 volumes:
   opendcc_settings:

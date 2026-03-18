@@ -4,9 +4,8 @@ OpenDCC Web Server
 FastAPI backend that:
   1. Serves the needle-tools usd-wasm bindings at /usd  (WASM+JS)
   2. Exports the live USD stage as .usda at /api/stage/export.usda
-     → the browser's HdWebSyncDriver fetches it and renders via Hydra-WASM
   3. Broadcasts scene_changed over WebSocket so the browser reloads on edits
-  4. Exposes REST endpoints for prim inspection and attribute editing
+  4. Exposes REST endpoints for prim inspection, editing, and DCC commands
 
 CRITICAL: SharedArrayBuffer (required by the WASM multi-threading) needs
   Cross-Origin-Embedder-Policy: require-corp
@@ -18,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import io
 import json
 import logging
@@ -25,7 +25,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -41,19 +41,17 @@ logging.basicConfig(level=logging.INFO,
                     format="%(levelname)s  %(name)s  %(message)s")
 
 # ── Path resolution ───────────────────────────────────────────────────────────
-_HERE         = Path(__file__).parent                          # …/web
+_HERE         = Path(__file__).parent
 _STATIC_DIR   = _HERE / "static"
-_REPO_ROOT    = _HERE.parent                                   # …/OpenDCC
-_PARENT_ROOT  = _REPO_ROOT.parent                              # …/ShapeFX
+_REPO_ROOT    = _HERE.parent
+_PARENT_ROOT  = _REPO_ROOT.parent
 
-# needle-tools/usd-viewer must be cloned as a sibling of OpenDCC.
-# Override with env var USD_VIEWER_PATH if needed.
 _USD_VIEWER   = Path(os.environ.get(
     "USD_VIEWER_PATH",
     str(_PARENT_ROOT / "usd-viewer")
 ))
-_USD_WASM_SRC = _USD_VIEWER / "usd-wasm" / "src"              # emHdBindings.* + ThreeJsRenderDelegate.js
-_USD_MODULES  = _USD_VIEWER / "public" / "modules"            # es-module-shims
+_USD_WASM_SRC = _USD_VIEWER / "usd-wasm" / "src"
+_USD_MODULES  = _USD_VIEWER / "public" / "modules"
 
 # ── OpenDCC state ─────────────────────────────────────────────────────────────
 _opendcc_available = False
@@ -89,17 +87,332 @@ def _init_opendcc() -> None:
         )
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# In-memory stub stage
+# Used when neither opendcc.core nor pxr is available (e.g. arm64 Docker).
+# Stores a flat prim dict, serialises to valid USDA, supports undo/redo.
+# ═════════════════════════════════════════════════════════════════════════════
+
+class _StubStage:
+    # Mesh data tuples ─────────────────────────────────────────────────────────
+    _BOX_ATTRS = [
+        'float3[] extent = [(-1,-1,-1),(1,1,1)]',
+        'int[]    faceVertexCounts  = [4,4,4,4,4,4]',
+        'int[]    faceVertexIndices = [0,1,2,3,4,5,6,7,0,4,7,1,2,6,5,3,0,3,5,4,1,7,6,2]',
+        'point3f[] points = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),'
+        '(-1,-1,1),(1,-1,1),(1,1,1),(-1,1,1)]',
+        'uniform token subdivisionScheme = "none"',
+    ]
+    _PLANE_ATTRS = [
+        'float3[] extent = [(-1,0,-1),(1,0,1)]',
+        'int[]    faceVertexCounts  = [4]',
+        'int[]    faceVertexIndices = [0,1,2,3]',
+        'point3f[] points = [(-1,0,-1),(1,0,-1),(1,0,1),(-1,0,1)]',
+        'normal3f[] normals = [(0,1,0),(0,1,0),(0,1,0),(0,1,0)]',
+        'uniform token subdivisionScheme = "none"',
+    ]
+
+    # prim-type → (usd_type_name_in_usda, [attr_lines])
+    _PRIM_DEFS: dict = {
+        "Cube":          ("Mesh",            _BOX_ATTRS),
+        "Plane":         ("Mesh",            _PLANE_ATTRS),
+        "Sphere":        ("Sphere",          ["double radius = 1"]),
+        "Cylinder":      ("Cylinder",        ["double radius = 1", "double height = 2"]),
+        "Cone":          ("Cone",            ["double radius = 1", "double height = 2"]),
+        "Capsule":       ("Capsule",         ["double radius = 0.5", "double height = 1"]),
+        "Camera":        ("Camera",          ["float focalLength = 50"]),
+        "Xform":         ("Xform",           []),
+        "Scope":         ("Scope",           []),
+        # UsdLux lights
+        "CylinderLight": ("CylinderLight",   ["float inputs:intensity = 1000",
+                                              "float inputs:radius = 0.5",
+                                              "float inputs:length = 2"]),
+        "DiskLight":     ("DiskLight",       ["float inputs:intensity = 1000",
+                                              "float inputs:radius = 0.5"]),
+        "DistantLight":  ("DistantLight",    ["float inputs:intensity = 2000",
+                                              "float inputs:angle = 0.53"]),
+        "DomeLight":     ("DomeLight",       ["float inputs:intensity = 1"]),
+        "RectLight":     ("RectLight",       ["float inputs:intensity = 1000",
+                                              "float inputs:width = 2",
+                                              "float inputs:height = 2"]),
+        "SphereLight":   ("SphereLight",     ["float inputs:intensity = 1000",
+                                              "float inputs:radius = 0.5"]),
+    }
+
+    def __init__(self) -> None:
+        self._prims:    dict = {}   # path → prim-data dict
+        self._children: dict = {}   # path → [child-path, …]
+        self._selection: list = []
+        self._undo_stack: list = []
+        self._redo_stack: list = []
+        self._reset()
+
+    # ── reset / init ──────────────────────────────────────────────────────────
+    def _reset(self) -> None:
+        self._prims = {
+            "/World": {
+                "name": "World", "type": "Xform", "usd_type": "Xform",
+                "active": True, "visibility": "inherited", "attrs": [],
+            },
+            "/World/Cube": {
+                "name": "Cube", "type": "Cube", "usd_type": "Mesh",
+                "active": True, "visibility": "inherited",
+                "attrs": list(self._BOX_ATTRS),
+            },
+        }
+        self._children = {"/": ["/World"], "/World": ["/World/Cube"], "/World/Cube": []}
+        self._selection = []
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+
+    # ── undo / redo ───────────────────────────────────────────────────────────
+    def _push_undo(self) -> None:
+        self._undo_stack.append((
+            copy.deepcopy(self._prims),
+            copy.deepcopy(self._children),
+            list(self._selection),
+        ))
+        self._redo_stack.clear()
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+
+    def undo(self) -> bool:
+        if not self._undo_stack:
+            return False
+        self._redo_stack.append((
+            copy.deepcopy(self._prims),
+            copy.deepcopy(self._children),
+            list(self._selection),
+        ))
+        self._prims, self._children, self._selection = self._undo_stack.pop()
+        return True
+
+    def redo(self) -> bool:
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append((
+            copy.deepcopy(self._prims),
+            copy.deepcopy(self._children),
+            list(self._selection),
+        ))
+        self._prims, self._children, self._selection = self._redo_stack.pop()
+        return True
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _parent_of(self, path: str) -> str:
+        parts = path.rstrip("/").rsplit("/", 1)
+        return parts[0] if len(parts) > 1 and parts[0] else "/"
+
+    def _unique_name(self, parent_path: str, base: str) -> str:
+        siblings = {self._prims[c]["name"]
+                    for c in self._children.get(parent_path, [])
+                    if c in self._prims}
+        if base not in siblings:
+            return base
+        i = 1
+        while f"{base}{i}" in siblings:
+            i += 1
+        return f"{base}{i}"
+
+    def _ensure_world(self) -> None:
+        if "/World" not in self._prims:
+            self._prims["/World"] = {
+                "name": "World", "type": "Xform", "usd_type": "Xform",
+                "active": True, "visibility": "inherited", "attrs": [],
+            }
+            self._children.setdefault("/", [])
+            if "/World" not in self._children["/"]:
+                self._children["/"].append("/World")
+            self._children.setdefault("/World", [])
+
+    # ── CRUD ──────────────────────────────────────────────────────────────────
+    def create_prim(self, prim_type: str, parent_path: str = "/World") -> str:
+        self._ensure_world()
+        if parent_path not in self._prims:
+            parent_path = "/World"
+
+        pdef      = self._PRIM_DEFS.get(prim_type, (prim_type, []))
+        usd_type  = pdef[0]
+        attrs     = list(pdef[1])
+        name      = self._unique_name(parent_path, prim_type)
+        path      = f"{parent_path.rstrip('/')}/{name}"
+
+        self._prims[path] = {
+            "name": name, "type": prim_type, "usd_type": usd_type,
+            "active": True, "visibility": "inherited", "attrs": attrs,
+        }
+        self._children.setdefault(parent_path, [])
+        self._children[parent_path].append(path)
+        self._children[path] = []
+        return path
+
+    def delete_prim(self, path: str) -> None:
+        for child in list(self._children.get(path, [])):
+            self.delete_prim(child)
+        parent = self._parent_of(path)
+        if parent in self._children:
+            self._children[parent] = [c for c in self._children[parent] if c != path]
+        self._prims.pop(path, None)
+        self._children.pop(path, None)
+        self._selection = [s for s in self._selection if not s.startswith(path)]
+
+    def duplicate_prim(self, path: str) -> str:
+        prim = self._prims.get(path)
+        if not prim:
+            return ""
+        parent   = self._parent_of(path)
+        name     = self._unique_name(parent, prim["name"])
+        new_path = f"{parent.rstrip('/')}/{name}"
+        self._prims[new_path] = copy.deepcopy(prim)
+        self._prims[new_path]["name"] = name
+        self._children.setdefault(parent, [])
+        self._children[parent].append(new_path)
+        self._children[new_path] = []
+        for child in self._children.get(path, []):
+            self._dup_subtree(child, new_path)
+        return new_path
+
+    def _dup_subtree(self, old_path: str, new_parent: str) -> None:
+        prim = self._prims.get(old_path)
+        if not prim:
+            return
+        new_path = f"{new_parent.rstrip('/')}/{prim['name']}"
+        self._prims[new_path] = copy.deepcopy(prim)
+        self._children.setdefault(new_parent, [])
+        self._children[new_parent].append(new_path)
+        self._children[new_path] = []
+        for child in self._children.get(old_path, []):
+            self._dup_subtree(child, new_path)
+
+    def group_prims(self, paths: list) -> str:
+        if not paths:
+            return ""
+        parents = {self._parent_of(p) for p in paths}
+        parent  = list(parents)[0] if len(parents) == 1 else "/World"
+        self._ensure_world()
+        name       = self._unique_name(parent, "Group")
+        group_path = f"{parent.rstrip('/')}/{name}"
+        self._prims[group_path] = {
+            "name": name, "type": "Xform", "usd_type": "Xform",
+            "active": True, "visibility": "inherited", "attrs": [],
+        }
+        self._children.setdefault(parent, [])
+        self._children[parent].append(group_path)
+        self._children[group_path] = []
+        for p in paths:
+            old_parent = self._parent_of(p)
+            if old_parent in self._children:
+                self._children[old_parent] = [c for c in self._children[old_parent] if c != p]
+            self._children[group_path].append(p)
+        return group_path
+
+    def rename_prim(self, path: str, new_name: str) -> str:
+        prim = self._prims.get(path)
+        if not prim:
+            return path
+        parent   = self._parent_of(path)
+        siblings = {self._prims[c]["name"]
+                    for c in self._children.get(parent, []) if c != path and c in self._prims}
+        if new_name in siblings:
+            i = 1
+            while f"{new_name}{i}" in siblings:
+                i += 1
+            new_name = f"{new_name}{i}"
+        new_path = f"{parent.rstrip('/')}/{new_name}"
+        data     = self._prims.pop(path)
+        data["name"] = new_name
+        self._prims[new_path] = data
+        if parent in self._children:
+            self._children[parent] = [new_path if c == path else c
+                                       for c in self._children[parent]]
+        children = self._children.pop(path, [])
+        self._children[new_path] = children
+        self._selection = [new_path if s == path else s for s in self._selection]
+        return new_path
+
+    def set_visibility(self, path: str, visible: bool) -> None:
+        prim = self._prims.get(path)
+        if prim:
+            prim["visibility"] = "inherited" if visible else "invisible"
+
+    def reparent(self, path: str, new_parent: str) -> None:
+        old_parent = self._parent_of(path)
+        if old_parent == new_parent:
+            return
+        if old_parent in self._children:
+            self._children[old_parent] = [c for c in self._children[old_parent] if c != path]
+        self._children.setdefault(new_parent, [])
+        self._children[new_parent].append(path)
+
+    # ── serialisation helpers (for /api/prims) ────────────────────────────────
+    def prim_dict(self, path: str) -> dict:
+        prim = self._prims.get(path, {})
+        return {
+            "path":       path,
+            "name":       prim.get("name", path.rsplit("/", 1)[-1]),
+            "type":       prim.get("type", "Xform"),
+            "active":     prim.get("active", True),
+            "visibility": prim.get("visibility", "inherited"),
+            "children":   self._children.get(path, []),
+        }
+
+    def children_dicts(self, parent_path: str) -> list:
+        result = []
+        for child_path in self._children.get(parent_path, []):
+            d = self.prim_dict(child_path)
+            d["children"] = self._children.get(child_path, [])
+            result.append(d)
+        return result
+
+    # ── USDA export ───────────────────────────────────────────────────────────
+    def to_usda(self) -> str:
+        lines = [
+            '#usda 1.0',
+            '(',
+            '    upAxis = "Y"',
+            '    doc = "OpenDCC web scene"',
+            ')',
+            '',
+        ]
+        for child_path in self._children.get("/", []):
+            lines.extend(self._prim_lines(child_path, 0))
+        return "\n".join(lines)
+
+    def _prim_lines(self, path: str, depth: int) -> list:
+        prim = self._prims.get(path)
+        if not prim:
+            return []
+        ind      = "    " * depth
+        usd_type = prim.get("usd_type", prim.get("type", "Xform"))
+        name     = prim.get("name", path.rsplit("/", 1)[-1])
+        vis      = prim.get("visibility", "inherited")
+        active   = prim.get("active", True)
+
+        lines: list = []
+        act_str = "" if active else " (active = false)"
+        lines.append(f'{ind}def {usd_type} "{name}"{act_str}')
+        lines.append(f'{ind}{{')
+        if vis == "invisible":
+            lines.append(f'{ind}    token visibility = "invisible"')
+        for attr in prim.get("attrs", []):
+            lines.append(f'{ind}    {attr}')
+        for child_path in self._children.get(path, []):
+            lines.extend(self._prim_lines(child_path, depth + 1))
+        lines.append(f'{ind}}}')
+        lines.append('')
+        return lines
+
+
+# Global stub stage instance
+_stub_stage = _StubStage()
+
+
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(title="OpenDCC Web", version="0.1.0")
 
 
 # ── COOP / COEP middleware ────────────────────────────────────────────────────
 class _CORPMiddleware(BaseHTTPMiddleware):
-    """
-    SharedArrayBuffer (used by the WASM worker threads) requires
-    Cross-Origin-Embedder-Policy and Cross-Origin-Opener-Policy to be set
-    on EVERY response – including the static JS/WASM assets.
-    """
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
@@ -112,15 +425,7 @@ app.add_middleware(_CORPMiddleware)
 
 
 # ── Static mounts ─────────────────────────────────────────────────────────────
-# Order matters: more-specific prefixes first.
-
 if _USD_WASM_SRC.exists():
-    # Serves:
-    #   /usd/bindings/emHdBindings.js    (WASM glue, sets globalThis["NEEDLE:USD:GET"])
-    #   /usd/bindings/emHdBindings.wasm  (16 MB OpenUSD compiled to WASM)
-    #   /usd/bindings/emHdBindings.data  (USD schema data)
-    #   /usd/bindings/emHdBindings.worker.js
-    #   /usd/hydra/ThreeJsRenderDelegate.js  (Hydra → Three.js bridge)
     app.mount("/usd", StaticFiles(directory=str(_USD_WASM_SRC)), name="usd-wasm")
     logger.info("usd-wasm served from %s", _USD_WASM_SRC)
 else:
@@ -131,7 +436,6 @@ else:
     )
 
 if _USD_MODULES.exists():
-    # Serves /modules/es-module-shims@1.8.0.js (import-map polyfill)
     app.mount("/modules", StaticFiles(directory=str(_USD_MODULES)), name="modules")
 
 if _STATIC_DIR.exists():
@@ -141,7 +445,7 @@ if _STATIC_DIR.exists():
 # ── WebSocket connection manager ──────────────────────────────────────────────
 class _Connections:
     def __init__(self) -> None:
-        self.active: list[WebSocket] = []
+        self.active: list = []
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
@@ -194,33 +498,19 @@ def _attr_to_dict(attr) -> dict:
 
 
 def _coerce_value(attr, raw_value: Any):
-    """Convert JSON-decoded value to a typed USD value for attr.Set()."""
     try:
         from pxr import Gf, Vt
         type_name = str(attr.GetTypeName())
-
         if isinstance(raw_value, list):
-            if "Vec3" in type_name:
-                return Gf.Vec3f(*[float(x) for x in raw_value[:3]])
-            if "Vec2" in type_name:
-                return Gf.Vec2f(*[float(x) for x in raw_value[:2]])
-            if "Vec4" in type_name:
-                return Gf.Vec4f(*[float(x) for x in raw_value[:4]])
-            if "Matrix4" in type_name:
-                return Gf.Matrix4d(*[float(x) for x in raw_value[:16]])
-            if "float" in type_name.lower():
-                return Vt.FloatArray([float(x) for x in raw_value])
-            if "int" in type_name.lower():
-                return Vt.IntArray([int(x) for x in raw_value])
-
+            if "Vec3"   in type_name: return Gf.Vec3f(*[float(x) for x in raw_value[:3]])
+            if "Vec2"   in type_name: return Gf.Vec2f(*[float(x) for x in raw_value[:2]])
+            if "Vec4"   in type_name: return Gf.Vec4f(*[float(x) for x in raw_value[:4]])
+            if "float"  in type_name.lower(): return Vt.FloatArray([float(x) for x in raw_value])
+            if "int"    in type_name.lower():  return Vt.IntArray([int(x)   for x in raw_value])
         if isinstance(raw_value, (int, float)):
-            if "float" in type_name.lower() or "double" in type_name.lower():
-                return float(raw_value)
-            if "int" in type_name.lower():
-                return int(raw_value)
-            if "bool" in type_name.lower():
-                return bool(raw_value)
-
+            if "float"  in type_name.lower() or "double" in type_name.lower(): return float(raw_value)
+            if "int"    in type_name.lower():  return int(raw_value)
+            if "bool"   in type_name.lower():  return bool(raw_value)
         return raw_value
     except Exception as exc:
         logger.debug("coerce_value failed: %s", exc)
@@ -234,46 +524,19 @@ async def index():
     html_path = _STATIC_DIR / "index.html"
     if html_path.exists():
         return HTMLResponse(html_path.read_text())
-    return HTMLResponse(
-        "<h1>OpenDCC Web</h1>"
-        "<p>static/index.html not found. "
-        "Make sure web/static/index.html exists.</p>"
-    )
+    return HTMLResponse("<h1>OpenDCC Web</h1><p>static/index.html not found.</p>")
 
 
 @app.get("/health")
 async def health():
     return {
-        "status":          "ok",
-        "opendcc":         _opendcc_available,
-        "usd_wasm_found":  _USD_WASM_SRC.exists(),
+        "status":         "ok",
+        "opendcc":        _opendcc_available,
+        "usd_wasm_found": _USD_WASM_SRC.exists(),
     }
 
 
-# ── USD stage export (consumed by HdWebSyncDriver in the browser) ─────────────
-
-# Minimal placeholder stage returned when no real stage is loaded.
-_STUB_USDA = """\
-#usda 1.0
-(
-    upAxis = "Y"
-    doc = "OpenDCC stub scene – open a USD file to see your content here"
-)
-
-def Xform "World"
-{
-    def Mesh "Cube"
-    {
-        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
-        int[]    faceVertexCounts  = [4, 4, 4, 4, 4, 4]
-        int[]    faceVertexIndices = [0,1,2,3, 4,5,6,7, 0,4,7,1, 2,6,5,3, 0,3,5,4, 1,7,6,2]
-        point3f[] points = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),
-                            (-1,-1, 1),(1,-1, 1),(1,1, 1),(-1,1, 1)]
-        uniform token subdivisionScheme = "none"
-    }
-}
-"""
-
+# ── USD stage export ──────────────────────────────────────────────────────────
 
 @app.get(
     "/api/stage/export.usda",
@@ -281,36 +544,25 @@ def Xform "World"
     responses={200: {"content": {"model/vnd.usda": {}}}},
 )
 async def stage_export_usda():
-    """
-    Return the current USD stage as flat USDA text.
-    The browser's HdWebSyncDriver fetches this URL and renders it
-    using the Hydra/WASM pipeline without any server-side geometry conversion.
-    """
     if not _opendcc_available:
         return Response(
-            content=_STUB_USDA,
+            content=_stub_stage.to_usda(),
             media_type="model/vnd.usda",
             headers={"Cache-Control": "no-store"},
         )
-
     stage = _current_stage()
     if not stage:
         return Response(
-            content=_STUB_USDA,
+            content=_stub_stage.to_usda(),
             media_type="model/vnd.usda",
             headers={"Cache-Control": "no-store"},
         )
-
     try:
-        # Flatten all sublayers into one .usda so that all references are
-        # self-contained and the browser doesn't need to resolve external paths.
         from pxr import UsdUtils
         flat_layer = UsdUtils.FlattenLayerStack(stage)
         usda = flat_layer.ExportToString()
     except Exception:
-        # Fallback: export just the root layer (may have unresolved references)
         usda = stage.GetRootLayer().ExportToString()
-
     return Response(
         content=usda,
         media_type="model/vnd.usda",
@@ -333,10 +585,9 @@ async def stage_open(req: _StageOpenReq):
         await _conns.broadcast({"event": "stage_opened", "path": p})
         await _conns.broadcast({"event": "scene_changed"})
         return {"ok": True, "stub": True, "path": p}
-
     try:
         _session.open_stage(p)
-        await _conns.broadcast({"event": "stage_opened",  "path": p})
+        await _conns.broadcast({"event": "stage_opened", "path": p})
         await _conns.broadcast({"event": "scene_changed"})
         return {"ok": True, "path": p}
     except Exception as exc:
@@ -346,6 +597,9 @@ async def stage_open(req: _StageOpenReq):
 @app.post("/api/stage/new")
 async def stage_new():
     if not _opendcc_available:
+        _stub_stage._reset()
+        await _conns.broadcast({"event": "stage_new"})
+        await _conns.broadcast({"event": "scene_changed"})
         return {"ok": True, "stub": True}
     _session.new_stage()
     await _conns.broadcast({"event": "stage_new"})
@@ -381,22 +635,10 @@ async def stage_info():
 
 # ── Prim tree ─────────────────────────────────────────────────────────────────
 
-_STUB_TREE: dict = {
-    "/": [
-        {"path": "/World", "name": "World", "type": "Xform",
-         "active": True, "children": ["/World/Cube"]},
-    ],
-    "/World": [
-        {"path": "/World/Cube", "name": "Cube", "type": "Mesh",
-         "active": True, "children": []},
-    ],
-    "/World/Cube": [],
-}
-
 @app.get("/api/prims")
 async def prims_list(path: str = "/"):
     if not _opendcc_available:
-        return {"path": path, "children": _STUB_TREE.get(path, [])}
+        return {"path": path, "children": _stub_stage.children_dicts(path)}
 
     stage = _current_stage()
     if not stage:
@@ -418,16 +660,21 @@ async def prim_detail(prim_path: str):
     full_path = "/" + prim_path.lstrip("/")
 
     if not _opendcc_available:
-        return {
-            "path": full_path, "name": full_path.split("/")[-1],
-            "type": "Mesh",
-            "attributes": [
-                {"name": "points",           "type": "point3f[]",
-                 "value": "[]",              "variability": "varying"},
-                {"name": "xformOp:translate","type": "double3",
-                 "value": "(0, 0, 0)",       "variability": "varying"},
-            ],
-        }
+        d = _stub_stage.prim_dict(full_path)
+        prim = _stub_stage._prims.get(full_path, {})
+        attrs = []
+        for attr_line in prim.get("attrs", []):
+            # parse "type name = value" lines into structured form
+            parts = attr_line.strip().split(" = ", 1)
+            if len(parts) == 2:
+                left  = parts[0].strip().rsplit(" ", 1)
+                aname = left[-1] if left else attr_line
+                atype = left[0]  if len(left) > 1 else "token"
+                attrs.append({"name": aname, "type": atype,
+                               "value": parts[1], "variability": "varying"})
+        attrs.append({"name": "xformOp:translate", "type": "double3",
+                      "value": "(0, 0, 0)", "variability": "varying"})
+        return {**d, "attributes": attrs}
 
     stage = _current_stage()
     if not stage:
@@ -470,8 +717,7 @@ async def prim_set_attr(prim_path: str, req: _AttrSetReq):
 
     attr = prim.GetAttribute(req.attribute)
     if not attr or not attr.IsValid():
-        raise HTTPException(status_code=404,
-                            detail=f"Attribute not found: {req.attribute}")
+        raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
 
     try:
         typed_val = _coerce_value(attr, req.value)
@@ -483,10 +729,256 @@ async def prim_set_attr(prim_path: str, req: _AttrSetReq):
         raise HTTPException(status_code=400, detail=f"Set failed: {exc}")
 
     await _conns.broadcast({
-        "event":     "scene_changed",
-        "primPath":  full_path,
-        "attribute": req.attribute,
+        "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
     })
+    return {"ok": True}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DCC commands  (mirrors opendcc.cmds / opendcc.actions)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Selection ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/selection")
+async def get_selection():
+    if not _opendcc_available:
+        return {"paths": _stub_stage._selection}
+    return {"paths": [str(p) for p in _app_core.get_prim_selection()]}
+
+
+class _SelectionReq(BaseModel):
+    paths:   List[str]
+    replace: bool = True
+
+
+@app.post("/api/selection")
+async def set_selection(req: _SelectionReq):
+    if not _opendcc_available:
+        if req.replace:
+            _stub_stage._selection = list(req.paths)
+        else:
+            for p in req.paths:
+                if p not in _stub_stage._selection:
+                    _stub_stage._selection.append(p)
+        return {"ok": True, "paths": _stub_stage._selection}
+    import opendcc.core as dcc_core
+    import opendcc.cmds as cmds
+    from pxr import Sdf
+    sel = dcc_core.SelectionList([Sdf.Path(p) for p in req.paths])
+    cmds.select(sel, replace=req.replace)
+    return {"ok": True}
+
+
+# ── Create prim ───────────────────────────────────────────────────────────────
+
+class _CreatePrimReq(BaseModel):
+    type:   str
+    parent: str = "/World"
+
+
+@app.post("/api/prims/create")
+async def cmd_create_prim(req: _CreatePrimReq):
+    if not _opendcc_available:
+        _stub_stage._push_undo()
+        path = _stub_stage.create_prim(req.type, req.parent)
+        _stub_stage._selection = [path]
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True, "path": path}
+
+    import opendcc.cmds as cmds
+    res  = cmds.create_prim(req.type, req.type)
+    path = res.get_result() if res.is_successful() else None
+    if path:
+        await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": bool(path), "path": str(path) if path else None}
+
+
+# ── Delete prims ──────────────────────────────────────────────────────────────
+
+class _DeleteReq(BaseModel):
+    paths: Optional[List[str]] = None
+
+
+@app.post("/api/prims/delete")
+async def cmd_delete_prims(req: _DeleteReq):
+    if not _opendcc_available:
+        paths = req.paths or list(_stub_stage._selection)
+        if not paths:
+            return {"ok": False, "error": "nothing selected"}
+        _stub_stage._push_undo()
+        for p in list(paths):
+            _stub_stage.delete_prim(p)
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True, "deleted": paths}
+
+    import opendcc.core as dcc_core
+    from pxr import Sdf
+    from opendcc.usd_ui_utils import remove_prims
+    from opendcc.undo import UsdEditsUndoBlock
+    paths = req.paths or [str(p) for p in _app_core.get_prim_selection()]
+    stage = _current_stage()
+    with Sdf.ChangeBlock(), UsdEditsUndoBlock():
+        remove_prims(paths, stage, ask=False)
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+# ── Duplicate prims ───────────────────────────────────────────────────────────
+
+class _DuplicateReq(BaseModel):
+    paths: Optional[List[str]] = None
+
+
+@app.post("/api/prims/duplicate")
+async def cmd_duplicate_prims(req: _DuplicateReq):
+    if not _opendcc_available:
+        paths = req.paths or list(_stub_stage._selection)
+        if not paths:
+            return {"ok": False, "error": "nothing selected"}
+        _stub_stage._push_undo()
+        new_paths = [_stub_stage.duplicate_prim(p) for p in paths]
+        _stub_stage._selection = [p for p in new_paths if p]
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True, "new_paths": new_paths}
+
+    import opendcc.cmds as cmds
+    cmds.duplicate_prim()
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+# ── Group prims ───────────────────────────────────────────────────────────────
+
+class _GroupReq(BaseModel):
+    paths: Optional[List[str]] = None
+
+
+@app.post("/api/prims/group")
+async def cmd_group_prims(req: _GroupReq):
+    if not _opendcc_available:
+        paths = req.paths or list(_stub_stage._selection)
+        if not paths:
+            return {"ok": False, "error": "nothing selected"}
+        _stub_stage._push_undo()
+        group_path = _stub_stage.group_prims(paths)
+        _stub_stage._selection = [group_path]
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True, "path": group_path}
+
+    import opendcc.cmds as cmds
+    cmds.group_prim()
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+# ── Rename prim ───────────────────────────────────────────────────────────────
+
+class _RenameReq(BaseModel):
+    path:     str
+    new_name: str
+
+
+@app.post("/api/prims/rename")
+async def cmd_rename_prim(req: _RenameReq):
+    if not _opendcc_available:
+        _stub_stage._push_undo()
+        new_path = _stub_stage.rename_prim(req.path, req.new_name)
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True, "new_path": new_path}
+
+    import opendcc.cmds as cmds
+    from pxr import Sdf
+    cmds.rename_prim(Sdf.Path(req.path), req.new_name)
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+# ── Visibility ────────────────────────────────────────────────────────────────
+
+class _VisibilityReq(BaseModel):
+    paths:   Optional[List[str]] = None
+    visible: bool = True
+
+
+@app.post("/api/prims/visibility")
+async def cmd_set_visibility(req: _VisibilityReq):
+    if not _opendcc_available:
+        paths = req.paths or list(_stub_stage._selection)
+        _stub_stage._push_undo()
+        for p in paths:
+            _stub_stage.set_visibility(p, req.visible)
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True}
+
+    import opendcc.core as dcc_core
+    from pxr import Sdf, UsdGeom
+    from opendcc.undo import UsdEditsUndoBlock
+    paths = req.paths or [str(p) for p in _app_core.get_prim_selection()]
+    stage = _current_stage()
+    token = UsdGeom.Tokens.inherited if req.visible else UsdGeom.Tokens.invisible
+    with Sdf.ChangeBlock(), UsdEditsUndoBlock():
+        for path in paths:
+            prim = stage.GetPrimAtPath(Sdf.Path(path))
+            if prim and prim.HasAttribute("visibility"):
+                prim.GetAttribute("visibility").Set(token)
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+# ── Parent / unparent ─────────────────────────────────────────────────────────
+
+class _ParentReq(BaseModel):
+    parent_path:        str
+    paths:              Optional[List[str]] = None
+    preserve_transform: bool = True
+
+
+@app.post("/api/prims/parent")
+async def cmd_parent_prims(req: _ParentReq):
+    if not _opendcc_available:
+        paths = req.paths or list(_stub_stage._selection)
+        _stub_stage._push_undo()
+        for p in paths:
+            _stub_stage.reparent(p, req.parent_path)
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True}
+
+    import opendcc.cmds as cmds
+    from pxr import Sdf
+    paths = req.paths or [str(p) for p in _app_core.get_prim_selection()]
+    cmds.parent_prim(
+        Sdf.Path(req.parent_path),
+        paths=[Sdf.Path(p) for p in paths],
+        preserve_transform=req.preserve_transform,
+    )
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+# ── Undo / Redo ───────────────────────────────────────────────────────────────
+
+@app.post("/api/undo")
+async def cmd_undo():
+    if not _opendcc_available:
+        ok = _stub_stage.undo()
+        if ok:
+            await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": ok}
+    _app_core.get_undo_stack().undo()
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+@app.post("/api/redo")
+async def cmd_redo():
+    if not _opendcc_available:
+        ok = _stub_stage.redo()
+        if ok:
+            await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": ok}
+    _app_core.get_undo_stack().redo()
+    await _conns.broadcast({"event": "scene_changed"})
     return {"ok": True}
 
 
@@ -498,7 +990,7 @@ class _ExecReq(BaseModel):
 
 @app.post("/api/execute")
 async def execute_python(req: _ExecReq):
-    output_lines: list[str] = []
+    output_lines: list = []
 
     class _Cap(io.StringIO):
         def write(self, s):
@@ -510,7 +1002,7 @@ async def execute_python(req: _ExecReq):
     sys.stdout = sys.stderr = cap
 
     try:
-        ctx: dict[str, Any] = {}
+        ctx: dict = {}
         if _opendcc_available:
             import opendcc.core as dcc_core
             ctx["app"]     = dcc_core.Application.instance()
@@ -538,9 +1030,9 @@ async def execute_python(req: _ExecReq):
 async def ws_endpoint(ws: WebSocket):
     await _conns.connect(ws)
     await ws.send_text(json.dumps({
-        "event":     "connected",
-        "opendcc":   _opendcc_available,
-        "usd_wasm":  _USD_WASM_SRC.exists(),
+        "event":    "connected",
+        "opendcc":  _opendcc_available,
+        "usd_wasm": _USD_WASM_SRC.exists(),
     }))
     try:
         while True:
@@ -558,8 +1050,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OpenDCC Web Server")
     parser.add_argument("--host",   default="0.0.0.0")
     parser.add_argument("--port",   type=int, default=8080)
-    parser.add_argument("--reload", action="store_true",
-                        help="uvicorn auto-reload (dev mode)")
+    parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
 
     _init_opendcc()
