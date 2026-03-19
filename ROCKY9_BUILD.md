@@ -180,9 +180,9 @@ export PATH="${DEPS_PREFIX}/qt5/bin:$PATH"
 BOOST_VERSION=1.80.0
 BOOST_US=1_80_0
 cd /tmp
-curl -fsSL "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_US}.tar.bz2" \
-    -o boost.tar.bz2
-tar -xf boost.tar.bz2 && cd boost_${BOOST_US}
+curl -fsSL "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_US}.tar.gz" \
+    -o boost.tar.gz
+tar -xzf boost.tar.gz && cd boost_${BOOST_US}
 
 cat > user-config.jam <<'EOF'
 using python : 3.11 : /usr/bin/python3.11 : /usr/include/python3.11 : /usr/lib64 ;

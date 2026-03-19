@@ -157,9 +157,9 @@ if [[ ! -f "$BOOST_PREFIX/lib/libboost_python311.so" ]] && \
     cd "$TMPDIR"
     BOOST_VERSION=1.80.0
     BOOST_US=1_80_0
-    curl -fsSL "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_US}.tar.bz2" \
-        -o boost.tar.bz2
-    tar -xf boost.tar.bz2
+    curl -fsSL "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_US}.tar.gz" \
+        -o boost.tar.gz
+    tar -xzf boost.tar.gz
     cd boost_${BOOST_US}
     cat > user-config.jam <<'JAMEOF'
 using python : 3.11 : /usr/bin/python3.11 : /usr/include/python3.11 : /usr/lib64 ;

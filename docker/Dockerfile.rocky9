@@ -165,9 +165,9 @@ RUN pip3 install --no-cache-dir PySide2 shiboken2 || \
 ARG BOOST_VERSION=1.80.0
 ARG BOOST_VERSION_US=1_80_0
 RUN cd /tmp && \
-    curl -fsSL "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_US}.tar.bz2" \
-        -o boost.tar.bz2 && \
-    tar -xf boost.tar.bz2 && \
+    curl -fsSL "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_US}.tar.gz" \
+        -o boost.tar.gz && \
+    tar -xzf boost.tar.gz && \
     cd boost_${BOOST_VERSION_US} && \
     echo "using python : 3.11 : /usr/bin/python3.11 : /usr/include/python3.11 : /usr/lib64 ;" > user-config.jam && \
     ./bootstrap.sh --with-python=python3.11 --prefix=/opt/boost && \
