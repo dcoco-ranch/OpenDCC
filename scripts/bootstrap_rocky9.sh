@@ -308,7 +308,7 @@ if [[ ! -d "$OPENMESH_PREFIX/share/OpenMesh/cmake" ]]; then
     cd "$TMPDIR"
     curl -fsSL "https://www.graphics.rwth-aachen.de/media/openmesh_static/Releases/9.0/OpenMesh-9.0.tar.bz2" \
         | tar -xj
-    cmake -S OpenMesh-9.0 -B openmesh_build -G Ninja \
+    cmake -S OpenMesh-9.0.0 -B openmesh_build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_APPS=OFF \
         -DCMAKE_INSTALL_PREFIX="$OPENMESH_PREFIX"

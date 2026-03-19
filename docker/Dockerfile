@@ -81,12 +81,12 @@ RUN git clone --depth 1 --branch ${SENTRY_VERSION} --recurse-submodules \
 ARG OPENMESH_VERSION=9.0
 RUN curl -fsSL https://www.graphics.rwth-aachen.de/media/openmesh_static/Releases/${OPENMESH_VERSION}/OpenMesh-${OPENMESH_VERSION}.tar.bz2 \
         | tar -xj -C /tmp && \
-    cmake -S /tmp/OpenMesh-${OPENMESH_VERSION} -B /tmp/openmesh_build \
+    cmake -S /tmp/OpenMesh-${OPENMESH_VERSION}.0 -B /tmp/openmesh_build \
           -DCMAKE_BUILD_TYPE=Release \
           -DBUILD_APPS=OFF \
           -DCMAKE_INSTALL_PREFIX=/opt/deps && \
     cmake --build /tmp/openmesh_build -j2 --target install && \
-    rm -rf /tmp/OpenMesh-${OPENMESH_VERSION} /tmp/openmesh_build
+    rm -rf /tmp/OpenMesh-${OPENMESH_VERSION}.0 /tmp/openmesh_build
 
 # ── libigl (header-only) ──────────────────────────────────────────────────────
 RUN git clone --depth 1 https://github.com/libigl/libigl.git /opt/deps/include/igl_src && \
