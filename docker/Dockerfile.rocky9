@@ -238,9 +238,10 @@ RUN git clone --depth 1 --branch ${PUGIXML_VERSION} \
     ninja -C /tmp/pugixml/build -j$(nproc) install && \
     rm -rf /tmp/pugixml
 
-# ── OSL (Open Shading Language) 1.13.x ───────────────────────────────────────
-# v1.13.x supports LLVM 13-17 (Rocky 9 ships LLVM 16/17)
-ARG OSL_VERSION=v1.13.12.0
+# ── OSL (Open Shading Language) 1.14.x ───────────────────────────────────────
+# v1.14.x supports LLVM 11-22 (Rocky 9 ships LLVM 20)
+# v1.13.x only supports up to LLVM 19
+ARG OSL_VERSION=v1.14.9.0
 RUN git clone --depth 1 --branch ${OSL_VERSION} \
         https://github.com/AcademySoftwareFoundation/OpenShadingLanguage.git /tmp/osl && \
     cmake -S /tmp/osl -B /tmp/osl/build \
