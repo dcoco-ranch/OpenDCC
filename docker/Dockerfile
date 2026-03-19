@@ -170,7 +170,7 @@ COPY --from=opendcc_build /opt/usd     /opt/usd
 # ── Web server sources ────────────────────────────────────────────────────────
 COPY OpenDCC/web/ /opt/opendcc/web/
 
-# ── needle-tools usd-wasm (WASM binaries + ThreeJsRenderDelegate) ─────────────
+# ── needle-tools usd-wasm (optional — run docker/build.sh to create stubs if missing)
 #   emHdBindings.wasm      ~16 MB  (OpenUSD compiled to WebAssembly)
 #   emHdBindings.js        ~352 KB (WASM glue, sets globalThis["NEEDLE:USD:GET"])
 #   emHdBindings.worker.js ~4 KB   (SharedArrayBuffer worker)

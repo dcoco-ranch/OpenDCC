@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements_web.txt && \
 # ── Web server ────────────────────────────────────────────────────────────────
 COPY OpenDCC/web/ /app/web/
 
-# ── needle-tools usd-wasm ─────────────────────────────────────────────────────
+# ── needle-tools usd-wasm (optional — run docker/build.sh to create stubs if missing)
 #   emHdBindings.wasm  ~16 MB  (OpenUSD compiled to WebAssembly)
 #   ThreeJsRenderDelegate.js   (Hydra → Three.js bridge)
 COPY usd-viewer/usd-wasm/src     /opt/usd-viewer/usd-wasm/src

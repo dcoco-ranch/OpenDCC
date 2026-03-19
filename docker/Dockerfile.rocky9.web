@@ -42,7 +42,7 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements_web.txt && \
 # ── Web server ────────────────────────────────────────────────────────────────
 COPY OpenDCC/web/ /app/web/
 
-# ── usd-wasm ──────────────────────────────────────────────────────────────────
+# ── usd-wasm (optional — run docker/build.sh to create stubs if missing) ─────
 COPY usd-viewer/usd-wasm/src     /opt/usd-viewer/usd-wasm/src
 COPY usd-viewer/public/modules   /opt/usd-viewer/public/modules
 

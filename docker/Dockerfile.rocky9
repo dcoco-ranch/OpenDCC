@@ -455,7 +455,7 @@ COPY --from=opendcc_build /opt/osl     /opt/osl
 # ── Web server sources ────────────────────────────────────────────────────────
 COPY OpenDCC/web/ /opt/opendcc/web/
 
-# ── usd-wasm (WASM binaries + ThreeJsRenderDelegate) ─────────────────────────
+# ── usd-wasm (optional — run docker/build.sh to create stubs if missing) ─────
 COPY usd-viewer/usd-wasm/src     /opt/usd-viewer/usd-wasm/src
 COPY usd-viewer/public/modules   /opt/usd-viewer/public/modules
 
