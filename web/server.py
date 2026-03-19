@@ -98,16 +98,9 @@ class _StubStage:
     _BOX_ATTRS = [
         'float3[] extent = [(-1,-1,-1),(1,1,1)]',
         'int[]    faceVertexCounts  = [4,4,4,4,4,4]',
-        'int[]    faceVertexIndices = [0,1,3,2, 2,3,5,4, 4,5,7,6, 6,7,1,0, 1,7,5,3, 6,0,2,4]',
+        'int[]    faceVertexIndices = [0,1,2,3, 4,5,6,7, 0,6,5,1, 2,7,4,3, 0,3,4,6, 1,5,7,2]',
         'point3f[] points = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),'
         '(-1,-1,1),(1,-1,1),(1,1,1),(-1,1,1)]',
-        'normal3f[] normals = [(0,0,-1),(0,0,-1),(0,0,-1),(0,0,-1),'
-        '(0,1,0),(0,1,0),(0,1,0),(0,1,0),'
-        '(0,0,1),(0,0,1),(0,0,1),(0,0,1),'
-        '(0,-1,0),(0,-1,0),(0,-1,0),(0,-1,0),'
-        '(1,0,0),(1,0,0),(1,0,0),(1,0,0),'
-        '(-1,0,0),(-1,0,0),(-1,0,0),(-1,0,0)]',
-        'token interpolation:normals = "faceVarying"',
         'uniform token subdivisionScheme = "none"',
     ]
     _PLANE_ATTRS = [
@@ -166,17 +159,11 @@ class _StubStage:
                 "active": True, "visibility": "inherited",
                 "attrs": list(self._BOX_ATTRS),
             },
-            "/World/DefaultLight": {
-                "name": "DefaultLight", "type": "DomeLight", "usd_type": "DomeLight",
-                "active": True, "visibility": "inherited",
-                "attrs": ["float inputs:intensity = 1"],
-            },
         }
         self._children = {
             "/": ["/World"],
-            "/World": ["/World/Cube", "/World/DefaultLight"],
+            "/World": ["/World/Cube"],
             "/World/Cube": [],
-            "/World/DefaultLight": [],
         }
         self._selection = []
         self._undo_stack.clear()
