@@ -309,6 +309,37 @@ RUN git clone --depth 1 --branch ${OSL_VERSION} \
     ninja -C /tmp/osl/build -j$(nproc) install && \
     rm -rf /tmp/osl
 
+# ── Alembic ───────────────────────────────────────────────────────────────────
+ARG ALEMBIC_VERSION=1.8.5
+RUN git clone --depth 1 --branch ${ALEMBIC_VERSION} \
+        https://github.com/alembic/alembic.git /tmp/alembic && \
+    cmake -S /tmp/alembic -B /tmp/alembic/build \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/deps \
+        -DUSE_TESTS=OFF \
+        -DUSE_BINARIES=OFF \
+        -DUSE_HDF5=OFF && \
+    ninja -C /tmp/alembic/build -j$(nproc) install && \
+    rm -rf /tmp/alembic
+
+# ── MaterialX ────────────────────────────────────────────────────────────────
+ARG MATERIALX_VERSION=v1.38.8
+RUN git clone --depth 1 --branch ${MATERIALX_VERSION} \
+        https://github.com/AcademySoftwareFoundation/MaterialX.git /tmp/materialx && \
+    cmake -S /tmp/materialx -B /tmp/materialx/build \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/deps \
+        -DMATERIALX_BUILD_TESTS=OFF \
+        -DMATERIALX_BUILD_PYTHON=OFF \
+        -DMATERIALX_BUILD_VIEWER=OFF \
+        -DMATERIALX_BUILD_RENDER=ON \
+        -DMATERIALX_BUILD_GEN_GLSL=ON \
+        -DMATERIALX_BUILD_GEN_OSL=ON && \
+    ninja -C /tmp/materialx/build -j$(nproc) install && \
+    rm -rf /tmp/materialx
+
 # ── pybind11 ──────────────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir pybind11
 
@@ -325,38 +356,24 @@ FROM builder AS usd_build
 ARG USD_VERSION=v23.05
 RUN git clone --depth 1 --branch ${USD_VERSION} \
         https://github.com/PixarAnimationStudios/OpenUSD.git /tmp/usd_src && \
-    python3 /tmp/usd_src/build_scripts/build_usd.py \
-        --python \
-        --usd-imaging \
-        --opencolorio \
-        --openimageio \
-        --no-examples \
-        --no-tutorials \
-        --no-docs \
-        --no-usdview \
-        --embree \
-        --opensubdiv \
-        -j $(nproc) \
-        /opt/usd \
-    || ( \
-        # Fallback: manual cmake build if build_usd.py fails
-        cmake -S /tmp/usd_src -B /tmp/usd_build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/opt/usd \
-            -DCMAKE_PREFIX_PATH="/opt/boost;/opt/ocio;/opt/oiio;/opt/osd;/opt/embree;/opt/qt5" \
-            -DPXR_BUILD_TESTS=OFF \
-            -DPXR_BUILD_EXAMPLES=OFF \
-            -DPXR_BUILD_TUTORIALS=OFF \
-            -DPXR_BUILD_USD_TOOLS=ON \
-            -DPXR_BUILD_IMAGING=ON \
-            -DPXR_BUILD_USD_IMAGING=ON \
-            -DPXR_BUILD_USDVIEW=OFF \
-            -DPXR_ENABLE_PYTHON_SUPPORT=ON \
-            -DPXR_USE_PYTHON_3=ON \
-            -DPython3_EXECUTABLE=/usr/bin/python3.11 && \
-        ninja -C /tmp/usd_build -j$(nproc) install \
-    ) && \
+    cmake -S /tmp/usd_src -B /tmp/usd_build \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/usd \
+        -DCMAKE_PREFIX_PATH="/opt/boost;/opt/ocio;/opt/oiio;/opt/osd;/opt/embree;/opt/qt5;/opt/deps" \
+        -DPXR_BUILD_TESTS=OFF \
+        -DPXR_BUILD_EXAMPLES=OFF \
+        -DPXR_BUILD_TUTORIALS=OFF \
+        -DPXR_BUILD_USD_TOOLS=ON \
+        -DPXR_BUILD_IMAGING=ON \
+        -DPXR_BUILD_USD_IMAGING=ON \
+        -DPXR_BUILD_USDVIEW=OFF \
+        -DPXR_ENABLE_PYTHON_SUPPORT=ON \
+        -DPXR_USE_PYTHON_3=ON \
+        -DPython3_EXECUTABLE=/usr/bin/python3.11 \
+        -DPXR_BUILD_ALEMBIC_PLUGIN=ON \
+        -DPXR_ENABLE_MATERIALX_SUPPORT=ON && \
+    ninja -C /tmp/usd_build -j$(nproc) install && \
     rm -rf /tmp/usd_src /tmp/usd_build /opt/usd/src /opt/usd/build
 
 

@@ -101,21 +101,27 @@ RUN pip3 install --no-cache-dir pybind11
 
 # ── OpenUSD 22.05 (VFX Platform 2022) ────────────────────────────────────────
 # ci-usd has all deps but NOT USD itself — build it here.
+# Use cmake directly since build_usd.py re-downloads deps that are already in the image.
 ARG USD_VERSION=v22.05
 RUN git clone --depth 1 --branch ${USD_VERSION} \
         https://github.com/PixarAnimationStudios/OpenUSD.git /tmp/usd_src && \
-    python3 /tmp/usd_src/build_scripts/build_usd.py \
-        --python \
-        --usd-imaging \
-        --opencolorio \
-        --openimageio \
-        --no-examples \
-        --no-tutorials \
-        --no-docs \
-        --no-usdview \
-        -j 2 \
-        /opt/usd && \
-    rm -rf /tmp/usd_src /opt/usd/src /opt/usd/build
+    cmake -S /tmp/usd_src -B /tmp/usd_build \
+        -G "Unix Makefiles" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/usd \
+        -DPXR_BUILD_TESTS=OFF \
+        -DPXR_BUILD_EXAMPLES=OFF \
+        -DPXR_BUILD_TUTORIALS=OFF \
+        -DPXR_BUILD_USD_TOOLS=ON \
+        -DPXR_BUILD_IMAGING=ON \
+        -DPXR_BUILD_USD_IMAGING=ON \
+        -DPXR_BUILD_USDVIEW=OFF \
+        -DPXR_ENABLE_PYTHON_SUPPORT=ON \
+        -DPXR_USE_PYTHON_3=ON \
+        -DPXR_BUILD_ALEMBIC_PLUGIN=ON \
+        -DPXR_ENABLE_MATERIALX_SUPPORT=ON && \
+    make -C /tmp/usd_build -j2 install && \
+    rm -rf /tmp/usd_src /tmp/usd_build
 
 
 # ─────────────────────────────────────────────────────────────────────────────
