@@ -89,6 +89,10 @@ RUN dnf install -y epel-release && \
         pkgconfig \
         openssl-devel \
         zlib-devel \
+        # Image libs (needed by Qt -system-libjpeg / -system-libpng)
+        libjpeg-turbo-devel \
+        libpng-devel \
+        libtiff-devel \
         # Multimedia / Qt deps
         alsa-lib-devel \
         pulseaudio-libs-devel \
