@@ -98,7 +98,7 @@ class _StubStage:
     _BOX_ATTRS = [
         'float3[] extent = [(-1,-1,-1),(1,1,1)]',
         'int[]    faceVertexCounts  = [4,4,4,4,4,4]',
-        'int[]    faceVertexIndices = [0,1,2,3, 4,5,6,7, 0,6,5,1, 2,7,4,3, 0,3,4,6, 1,5,7,2]',
+        'int[]    faceVertexIndices = [0,3,2,1, 4,5,6,7, 0,4,7,3, 1,2,6,5, 0,1,5,4, 2,3,7,6]',
         'point3f[] points = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),'
         '(-1,-1,1),(1,-1,1),(1,1,1),(-1,1,1)]',
         'uniform token subdivisionScheme = "none"',
