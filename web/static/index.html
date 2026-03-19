@@ -4,16 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpenDCC Web</title>
-
-  <!--
-    es-module-shims: import-map polyfill for browsers without native support.
-    Served from the usd-viewer repo at /modules/
-  -->
-  <script async src="/modules/es-module-shims@1.8.0.js"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%235a8fc2'/><text x='16' y='23' font-size='20' text-anchor='middle' fill='white' font-family='system-ui' font-weight='bold'>D</text></svg>">
 
   <!--
     Import map – must use THREE r163 to match ThreeJsRenderDelegate.js imports.
-    All relative module imports from usd-wasm/src/hydra/ resolve against this map.
+    Natively supported in Chrome 89+, Firefox 108+, Safari 16.4+.
   -->
   <script type="importmap">
   {
