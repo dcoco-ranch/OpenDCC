@@ -64,6 +64,7 @@ RUN dnf install -y epel-release && \
         libXxf86vm-devel \
         # ── Image libs ────────────────────────────────────────────────────
         libjpeg-turbo-devel \
+        turbojpeg-devel \
         libpng-devel \
         libtiff-devel \
         libwebp-devel \
