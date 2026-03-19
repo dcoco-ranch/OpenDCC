@@ -1,22 +1,24 @@
 services:
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Rocky Linux 9 images  (recommended)
+  # Rocky Linux 9  —  Web POC (recommended)
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # ── Rocky 9 web-only (fast build, ~3-5 min) ────────────────────────────────
-  # Serves the Three.js/WASM viewport on Rocky 9 minimal.
-  # No C++ OpenDCC compilation needed.
+  # ── Full USD backend + web server (NO Qt) ───────────────────────────────────
+  # Full OpenUSD 23.05 compiled from source with:
+  #   Hydra, Alembic, MaterialX, OCIO, OIIO, OpenSubdiv, Embree, OSL
+  # UI runs entirely in the browser — Qt is NOT needed.
   #
-  # Build:  docker compose build rocky9-web
-  # Start:  docker compose up rocky9-web
+  # Build:  docker compose build rocky9
+  # Start:  docker compose up rocky9
   # URL:    http://localhost:8080
-  rocky9-web:
+  rocky9:
     build:
-      context: ../..                          # ShapeFX/
-      dockerfile: OpenDCC/docker/Dockerfile.rocky9.web
-    image: opendcc-web:rocky9
-    container_name: opendcc-rocky9-web
+      context: ../..
+      dockerfile: OpenDCC/docker/Dockerfile.rocky9
+      target: runtime
+    image: opendcc:rocky9
+    container_name: opendcc-rocky9
     ports:
       - "8080:8080"
     volumes:
@@ -30,60 +32,26 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # ── Rocky 9 full C++ build (long build, ~1-3 h) ────────────────────────────
-  # Compiles OpenDCC with Qt5 + USD 23.05 + Hydra on Rocky Linux 9.
-  # VFX Reference Platform 2023 compliant.
-  #
-  # Build:  docker compose build rocky9
-  # Start:  docker compose up rocky9
-  # URL:    http://localhost:8082
-  rocky9:
-    build:
-      context: ../..
-      dockerfile: OpenDCC/docker/Dockerfile.rocky9
-      target: runtime
-    image: opendcc:rocky9
-    container_name: opendcc-rocky9
-    ports:
-      - "8082:8080"
-    volumes:
-      - type: bind
-        source: ${USD_STAGES_PATH:-./stages}
-        target: /data/stages
-      - opendcc_rocky9_settings:/opt/opendcc/settings
-    environment:
-      - QT_QPA_PLATFORM=offscreen
-      - USD_VIEWER_PATH=/opt/usd-viewer
-      - OPENDCC_STAGES_ROOT=/data/stages
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-  # ── Rocky 9 full build with GPU passthrough ────────────────────────────────
-  # Same as rocky9 but with NVIDIA GPU access for Hydra/Storm rendering.
-  # Requires: nvidia-container-toolkit installed on host.
+  # ── Full USD backend + GPU passthrough ──────────────────────────────────────
+  # Same as rocky9 but with NVIDIA GPU for Hydra/Storm headless rendering.
+  # Requires: nvidia-container-toolkit on host.
   #
-  # Build:  docker compose build rocky9  (reuses the same image)
+  # Build:  docker compose build rocky9  (reuses same image)
   # Start:  docker compose up rocky9-gpu
   rocky9-gpu:
     image: opendcc:rocky9
     container_name: opendcc-rocky9-gpu
     ports:
-      - "8083:8080"
+      - "8081:8080"
     volumes:
       - type: bind
         source: ${USD_STAGES_PATH:-./stages}
         target: /data/stages
-      - opendcc_rocky9_settings:/opt/opendcc/settings
     environment:
-      - QT_QPA_PLATFORM=offscreen
       - USD_VIEWER_PATH=/opt/usd-viewer
       - OPENDCC_STAGES_ROOT=/data/stages
       - NVIDIA_VISIBLE_DEVICES=all
@@ -96,23 +64,27 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Legacy CentOS 7 / ASWF images  (kept for backward compatibility)
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  # ── Web-only image (CentOS 7 / Debian slim) ────────────────────────────────
-  # Build:  docker compose build web
-  # Start:  docker compose up web
-  # URL:    http://localhost:8084
-  web:
+  # ── Lightweight web-only (no C++ build, pip usd-core) ──────────────────────
+  # Ultra-fast build (~3 min). Good for frontend dev / testing.
+  # USD Python from pip (limited features vs compiled).
+  #
+  # Build:  docker compose build rocky9-web
+  # Start:  docker compose up rocky9-web
+  # URL:    http://localhost:8082
+  rocky9-web:
     build:
-      context: ../..                          # ShapeFX/
-      dockerfile: OpenDCC/docker/Dockerfile.web
-    image: opendcc-web:latest
-    container_name: opendcc-web
+      context: ../..
+      dockerfile: OpenDCC/docker/Dockerfile.rocky9.web
+    image: opendcc-web:rocky9
+    container_name: opendcc-rocky9-web
     ports:
-      - "8084:8080"
+      - "8082:8080"
     volumes:
       - type: bind
         source: ${USD_STAGES_PATH:-./stages}
@@ -120,7 +92,6 @@ services:
     environment:
       - USD_VIEWER_PATH=/opt/usd-viewer
       - OPENDCC_STAGES_ROOT=/data/stages
-      - TF_DEBUG=0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -128,31 +99,4 @@ services:
       timeout: 5s
       retries: 3
 
-  # ── Full C++ build (ASWF CentOS 7, amd64 only) ────────────────────────────
-  # Build:  docker compose build full
-  # Start:  docker compose up full
-  full:
-    build:
-      context: ../..
-      dockerfile: OpenDCC/docker/Dockerfile
-      target: runtime
-      platforms:
-        - linux/amd64
-    image: opendcc:latest
-    container_name: opendcc
-    ports:
-      - "8085:8080"
-    volumes:
-      - type: bind
-        source: ${USD_STAGES_PATH:-./stages}
-        target: /data/stages
-      - opendcc_settings:/opt/opendcc/settings
-    environment:
-      - QT_QPA_PLATFORM=offscreen
-      - USD_VIEWER_PATH=/opt/usd-viewer
-      - OPENDCC_STAGES_ROOT=/data/stages
-    restart: unless-stopped
-
-volumes:
-  opendcc_rocky9_settings:
-  opendcc_settings:
+volumes: {}
