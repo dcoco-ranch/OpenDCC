@@ -570,6 +570,61 @@ async def stage_export_usda():
     )
 
 
+# ── GLB export (for Three.js GLTFLoader in browser) ──────────────────────────
+
+@app.get(
+    "/api/stage/export.glb",
+    response_class=Response,
+    responses={200: {"content": {"model/gltf-binary": {}}}},
+)
+async def stage_export_glb():
+    """Export the current stage as binary glTF (.glb) for Three.js."""
+    # Try full USD → glTF conversion first
+    stage = _current_stage() if _opendcc_available else None
+
+    if stage:
+        try:
+            from usd_to_gltf import stage_to_glb
+            glb = stage_to_glb(stage)
+            return Response(
+                content=glb,
+                media_type="model/gltf-binary",
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception as exc:
+            logger.warning("glTF export failed: %s", exc)
+
+    # Fallback: try opening stub USDA via pxr if available
+    try:
+        from pxr import Usd
+        from usd_to_gltf import stage_to_glb
+        usda = _stub_stage.to_usda()
+        tmp_stage = Usd.Stage.CreateInMemory()
+        tmp_stage.GetRootLayer().ImportFromString(usda)
+        glb = stage_to_glb(tmp_stage)
+        return Response(
+            content=glb,
+            media_type="model/gltf-binary",
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as exc:
+        logger.warning("Stub glTF export failed: %s", exc)
+
+    # Last resort: empty glTF
+    import struct, json as _json
+    empty_gltf = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": []}], "nodes": []}
+    j = _json.dumps(empty_gltf).encode()
+    pad = (4 - len(j) % 4) % 4
+    j += b" " * pad
+    header = struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(j))
+    chunk = struct.pack("<II", len(j), 0x4E4F534A) + j
+    return Response(
+        content=header + chunk,
+        media_type="model/gltf-binary",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 # ── Stage management ──────────────────────────────────────────────────────────
 
 class _StageOpenReq(BaseModel):
