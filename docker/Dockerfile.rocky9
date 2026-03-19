@@ -431,7 +431,6 @@ RUN dnf install -y epel-release && \
         openexr-libs \
         imath \
         eigen3 \
-        bullet-libs \
         alsa-lib \
         curl \
     && dnf clean all
