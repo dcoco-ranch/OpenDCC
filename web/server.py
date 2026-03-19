@@ -112,6 +112,10 @@ def _init_default_pxr_stage() -> None:
     _pxr_stage.SetDefaultPrim(world)
 
 
+# ── Init at module load (works with both `python server.py` and `uvicorn server:app`)
+_init_opendcc()
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # In-memory stub stage
 # Used when neither opendcc.core nor pxr is available (e.g. arm64 Docker).
