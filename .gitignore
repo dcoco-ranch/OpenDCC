@@ -3,3 +3,7 @@ install_dir
 .venv
 *.pyc
 ccache
+# Docker
+docker/stages/
+# Deploy
+*.service.local

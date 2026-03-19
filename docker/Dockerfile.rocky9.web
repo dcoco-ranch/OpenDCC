@@ -1,0 +1,60 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.rocky9.web  —  Web-only image on Rocky Linux 9
+#
+# Build context:  ShapeFX/   (parent of OpenDCC/ AND usd-viewer/)
+# Build time:     ~3-5 minutes
+#
+# What you get:
+#   • FastAPI web server on :8080
+#   • Three.js viewport with OpenUSD WASM (full USD rendering in browser)
+#   • Outliner, Properties panel, Script Editor
+#   • WebSocket live-reload on stage changes
+#   • USD Python bindings via pip (usd-core) on x86_64
+#   • /api/stage/export.usda → live stage or stub cube
+#
+# Build & run:
+#   cd ShapeFX/
+#   docker build -f OpenDCC/docker/Dockerfile.rocky9.web -t opendcc-web:rocky9 .
+#   docker run -p 8080:8080 -v $(pwd)/stages:/data/stages opendcc-web:rocky9
+#   open http://localhost:8080
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FROM rockylinux:9-minimal
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN microdnf install -y \
+        python3.11 \
+        python3.11-pip \
+        curl \
+        git \
+    && microdnf clean all
+
+# Make python3.11 the default
+RUN alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    alternatives --set python3 /usr/bin/python3.11
+
+# ── Python web dependencies ───────────────────────────────────────────────────
+COPY OpenDCC/web/requirements_web.txt /tmp/requirements_web.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements_web.txt && \
+    python3 -m pip install --no-cache-dir usd-core || \
+    echo "⚠  usd-core not available on this arch — server runs in stub mode"
+
+# ── Web server ────────────────────────────────────────────────────────────────
+COPY OpenDCC/web/ /app/web/
+
+# ── usd-wasm ──────────────────────────────────────────────────────────────────
+COPY usd-viewer/usd-wasm/src     /opt/usd-viewer/usd-wasm/src
+COPY usd-viewer/public/modules   /opt/usd-viewer/public/modules
+
+# ── Environment ──────────────────────────────────────────────────────────────
+ENV USD_VIEWER_PATH=/opt/usd-viewer
+ENV OPENDCC_STAGES_ROOT=/data/stages
+ENV QT_QPA_PLATFORM=offscreen
+
+WORKDIR /app
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["python3", "/app/web/server.py", "--host", "0.0.0.0", "--port", "8080"]

@@ -1,0 +1,59 @@
+[Unit]
+Description=OpenDCC Web Server (FastAPI + USD)
+Documentation=https://github.com/your-org/OpenDCC
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opendcc
+Group=opendcc
+
+# Environment
+EnvironmentFile=-/etc/sysconfig/opendcc
+Environment="OPENDCC_ROOT=/opt/opendcc"
+Environment="QT_QPA_PLATFORM=offscreen"
+Environment="DISPLAY="
+Environment="LC_NUMERIC=C"
+Environment="USD_VIEWER_PATH=/opt/usd-viewer"
+Environment="OPENDCC_STAGES_ROOT=/data/stages"
+
+# Library paths (adjust if your dep prefixes differ)
+Environment="PYTHONPATH=/opt/opendcc/lib/python3.11/site-packages:/opt/usd/lib/python"
+Environment="LD_LIBRARY_PATH=/opt/opendcc/lib:/opt/usd/lib:/opt/opendcc_deps/qt5/lib:/opt/opendcc_deps/boost/lib:/opt/opendcc_deps/ocio/lib:/opt/opendcc_deps/oiio/lib:/opt/opendcc_deps/osd/lib:/opt/opendcc_deps/embree/lib:/opt/opendcc_deps/osl/lib:/opt/opendcc_deps/ads/lib:/opt/opendcc_deps/sentry/lib:/opt/opendcc_deps/openmesh/lib"
+Environment="PXR_PLUGINPATH_NAME=/opt/opendcc/plugin/usd:/opt/opendcc/plugin/opendcc:/opt/usd/lib/usd"
+Environment="PATH=/opt/opendcc/bin:/opt/opendcc_deps/qt5/bin:/opt/usd/bin:/usr/local/bin:/usr/bin"
+
+# Working directory
+WorkingDirectory=/opt/opendcc
+
+# Launch
+ExecStart=/usr/bin/python3.11 /opt/opendcc/web/server.py --host 0.0.0.0 --port 8080
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/data/stages /tmp
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opendcc
+
+[Install]
+WantedBy=multi-user.target

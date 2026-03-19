@@ -81,17 +81,31 @@ OpenDCC conforms to the [VFX Reference Platform](https://vfxplatform.com/), ensu
 
 ### 🖥️ Platform & Build Support
 
-| Platform | Status         |
-| -------- | -------------- |
-| Linux    | ✅ Supported    |
-| Windows  | ✅ Supported    |
-| macOS    | ⚠️ In Progress |
+| Platform              | Status          |
+| --------------------- | --------------- |
+| Linux (Rocky 9 / EL9) | ✅ Supported    |
+| Linux (CentOS 7 ASWF) | ✅ Legacy       |
+| Windows               | ✅ Supported    |
+| macOS                 | ⚠️ In Progress  |
 
 ---
 
-### ⚙️ Building (Work in Progress)
+### ⚙️ Building
 
-This section is under active development.
+| Platform   | Guide                                          |
+| ---------- | ---------------------------------------------- |
+| Rocky 9    | [ROCKY9_BUILD.md](ROCKY9_BUILD.md)             |
+| macOS      | [MACOS_BUILD.md](MACOS_BUILD.md)               |
+| Docker     | [docker/](docker/) (Dockerfiles + Compose)      |
+
+**Quick start (Rocky Linux 9):**
+```bash
+# Automated: build all deps + USD + OpenDCC
+sudo bash scripts/bootstrap_rocky9.sh
+
+# Or use Docker:
+docker compose -f docker/docker-compose.yml up rocky9-web
+```
 
 ---
 
