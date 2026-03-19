@@ -64,6 +64,7 @@ RUN dnf install -y epel-release && \
         libXcomposite-devel \
         libXdamage-devel \
         libXxf86vm-devel \
+        libXt-devel \
         # ── Image libs ────────────────────────────────────────────────────
         libjpeg-turbo-devel \
         turbojpeg-devel \
@@ -287,7 +288,7 @@ RUN git clone --depth 1 --branch ${MATERIALX_VERSION} \
         -DMATERIALX_BUILD_TESTS=OFF \
         -DMATERIALX_BUILD_PYTHON=OFF \
         -DMATERIALX_BUILD_VIEWER=OFF \
-        -DMATERIALX_BUILD_RENDER=OFF \
+        -DMATERIALX_BUILD_RENDER=ON \
         -DMATERIALX_BUILD_GEN_GLSL=ON \
         -DMATERIALX_BUILD_GEN_OSL=ON \
         -DMATERIALX_BUILD_GEN_MDL=OFF && \
