@@ -55,12 +55,15 @@ _USD_MODULES  = _USD_VIEWER / "public" / "modules"
 
 # ── OpenDCC state ─────────────────────────────────────────────────────────────
 _opendcc_available = False
+_pxr_available     = False
 _app_core  = None
 _session   = None
+_pxr_stage = None   # Used in pxr-only mode (no opendcc.core)
 
 
 def _init_opendcc() -> None:
-    global _opendcc_available, _app_core, _session
+    global _opendcc_available, _pxr_available, _app_core, _session
+    # Try full OpenDCC C++ core first
     try:
         import opendcc.core as dcc_core
         from opendcc.app_config import ApplicationConfig
@@ -80,11 +83,33 @@ def _init_opendcc() -> None:
         _session           = _app_core.get_session()
         _opendcc_available = True
         logger.info("OpenDCC initialised (headless mode)")
+        return
+    except (ImportError, Exception) as exc:
+        logger.info("opendcc.core not available: %s", exc)
+
+    # Fall back to pxr (USD Python bindings) directly
+    try:
+        from pxr import Usd, UsdGeom  # noqa: F401
+        _pxr_available = True
+        logger.info("pxr (OpenUSD Python) available — running in USD server mode")
+        # Create a default stage
+        _init_default_pxr_stage()
     except ImportError:
         logger.warning(
-            "opendcc.core not importable – running in STUB mode.\n"
-            "PYTHONPATH must include the OpenDCC site-packages."
+            "Neither opendcc.core nor pxr importable – running in STUB mode.\n"
+            "Install OpenUSD or set PYTHONPATH to include USD Python bindings."
         )
+
+
+def _init_default_pxr_stage() -> None:
+    """Create a default in-memory USD stage with a cube."""
+    global _pxr_stage
+    from pxr import Usd, UsdGeom, Gf, Vt
+    _pxr_stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(_pxr_stage, UsdGeom.Tokens.y)
+    world = _pxr_stage.DefinePrim("/World", "Xform")
+    cube_prim = _pxr_stage.DefinePrim("/World/Cube", "Cube")
+    _pxr_stage.SetDefaultPrim(world)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -473,9 +498,11 @@ _conns = _Connections()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _current_stage():
-    if not _opendcc_available:
-        return None
-    return _session.get_stage() if _session else None
+    if _opendcc_available:
+        return _session.get_stage() if _session else None
+    if _pxr_available:
+        return _pxr_stage
+    return None
 
 
 def _prim_to_dict(prim) -> dict:
@@ -536,6 +563,7 @@ async def health():
     return {
         "status":         "ok",
         "opendcc":        _opendcc_available,
+        "pxr":            _pxr_available,
         "usd_wasm_found": _USD_WASM_SRC.exists(),
     }
 
@@ -548,24 +576,23 @@ async def health():
     responses={200: {"content": {"model/vnd.usda": {}}}},
 )
 async def stage_export_usda():
-    if not _opendcc_available:
-        return Response(
-            content=_stub_stage.to_usda(),
-            media_type="model/vnd.usda",
-            headers={"Cache-Control": "no-store"},
-        )
     stage = _current_stage()
-    if not stage:
-        return Response(
-            content=_stub_stage.to_usda(),
-            media_type="model/vnd.usda",
-            headers={"Cache-Control": "no-store"},
-        )
-    try:
-        from pxr import UsdUtils
-        flat_layer = UsdUtils.FlattenLayerStack(stage)
-        usda = flat_layer.ExportToString()
-    except Exception:
+    if stage:
+        try:
+            usda = stage.GetRootLayer().ExportToString()
+            return Response(
+                content=usda,
+                media_type="model/vnd.usda",
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception:
+            pass
+    # Fallback to stub
+    return Response(
+        content=_stub_stage.to_usda(),
+        media_type="model/vnd.usda",
+        headers={"Cache-Control": "no-store"},
+    )
         usda = stage.GetRootLayer().ExportToString()
     return Response(
         content=usda,
@@ -637,30 +664,52 @@ class _StageOpenReq(BaseModel):
 
 @app.post("/api/stage/open")
 async def stage_open(req: _StageOpenReq):
+    global _pxr_stage
     stages_root = os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
     p = req.path if os.path.isabs(req.path) else os.path.join(stages_root, req.path)
 
-    if not _opendcc_available:
-        await _conns.broadcast({"event": "stage_opened", "path": p})
-        await _conns.broadcast({"event": "scene_changed"})
-        return {"ok": True, "stub": True, "path": p}
-    try:
-        _session.open_stage(p)
-        await _conns.broadcast({"event": "stage_opened", "path": p})
-        await _conns.broadcast({"event": "scene_changed"})
-        return {"ok": True, "path": p}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    if _opendcc_available:
+        try:
+            _session.open_stage(p)
+            await _conns.broadcast({"event": "stage_opened", "path": p})
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "path": p}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    if _pxr_available:
+        try:
+            from pxr import Usd
+            if not os.path.exists(p):
+                raise HTTPException(status_code=404, detail=f"File not found: {p}")
+            _pxr_stage = Usd.Stage.Open(p)
+            if not _pxr_stage:
+                raise HTTPException(status_code=400, detail=f"Failed to open: {p}")
+            logger.info("Opened stage: %s (%d prims)", p,
+                        sum(1 for _ in _pxr_stage.TraverseAll()))
+            await _conns.broadcast({"event": "stage_opened", "path": p})
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "path": p}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    # Stub mode
+    await _conns.broadcast({"event": "stage_opened", "path": p})
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True, "stub": True, "path": p}
 
 
 @app.post("/api/stage/new")
 async def stage_new():
-    if not _opendcc_available:
+    global _pxr_stage
+    if _opendcc_available:
+        _session.new_stage()
+    elif _pxr_available:
+        _init_default_pxr_stage()
+    else:
         _stub_stage._reset()
-        await _conns.broadcast({"event": "stage_new"})
-        await _conns.broadcast({"event": "scene_changed"})
-        return {"ok": True, "stub": True}
-    _session.new_stage()
     await _conns.broadcast({"event": "stage_new"})
     await _conns.broadcast({"event": "scene_changed"})
     return {"ok": True}
@@ -696,58 +745,48 @@ async def stage_info():
 
 @app.get("/api/prims")
 async def prims_list(path: str = "/"):
-    if not _opendcc_available:
-        return {"path": path, "children": _stub_stage.children_dicts(path)}
-
     stage = _current_stage()
-    if not stage:
-        return {"path": path, "children": []}
+    if stage:
+        from pxr import Sdf
+        prim = stage.GetPrimAtPath(Sdf.Path(path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {path}")
+        return {
+            "path":     path,
+            "children": [_prim_to_dict(c) for c in prim.GetChildren()],
+        }
 
-    from pxr import Sdf
-    prim = stage.GetPrimAtPath(Sdf.Path(path))
-    if not prim or not prim.IsValid():
-        raise HTTPException(status_code=404, detail=f"Prim not found: {path}")
-
-    return {
-        "path":     path,
-        "children": [_prim_to_dict(c) for c in prim.GetChildren()],
-    }
+    return {"path": path, "children": _stub_stage.children_dicts(path)}
 
 
 @app.get("/api/prim/{prim_path:path}")
 async def prim_detail(prim_path: str):
     full_path = "/" + prim_path.lstrip("/")
 
-    if not _opendcc_available:
-        d = _stub_stage.prim_dict(full_path)
-        prim = _stub_stage._prims.get(full_path, {})
-        attrs = []
-        for attr_line in prim.get("attrs", []):
-            # parse "type name = value" lines into structured form
-            parts = attr_line.strip().split(" = ", 1)
-            if len(parts) == 2:
-                left  = parts[0].strip().rsplit(" ", 1)
-                aname = left[-1] if left else attr_line
-                atype = left[0]  if len(left) > 1 else "token"
-                attrs.append({"name": aname, "type": atype,
-                               "value": parts[1], "variability": "varying"})
-        attrs.append({"name": "xformOp:translate", "type": "double3",
-                      "value": "(0, 0, 0)", "variability": "varying"})
-        return {**d, "attributes": attrs}
-
     stage = _current_stage()
-    if not stage:
-        raise HTTPException(status_code=400, detail="No stage loaded")
+    if stage:
+        from pxr import Sdf
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+        return {
+            **_prim_to_dict(prim),
+            "attributes": [_attr_to_dict(a) for a in prim.GetAttributes()],
+        }
 
-    from pxr import Sdf
-    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
-    if not prim or not prim.IsValid():
-        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
-
-    return {
-        **_prim_to_dict(prim),
-        "attributes": [_attr_to_dict(a) for a in prim.GetAttributes()],
-    }
+    # Stub fallback
+    d = _stub_stage.prim_dict(full_path)
+    prim = _stub_stage._prims.get(full_path, {})
+    attrs = []
+    for attr_line in prim.get("attrs", []):
+        parts = attr_line.strip().split(" = ", 1)
+        if len(parts) == 2:
+            left  = parts[0].strip().rsplit(" ", 1)
+            aname = left[-1] if left else attr_line
+            atype = left[0]  if len(left) > 1 else "token"
+            attrs.append({"name": aname, "type": atype,
+                           "value": parts[1], "variability": "varying"})
+    return {**d, "attributes": attrs}
 
 
 # ── Attribute editing ─────────────────────────────────────────────────────────
@@ -1090,7 +1129,7 @@ async def ws_endpoint(ws: WebSocket):
     await _conns.connect(ws)
     await ws.send_text(json.dumps({
         "event":    "connected",
-        "opendcc":  _opendcc_available,
+        "opendcc":  _opendcc_available or _pxr_available,
         "usd_wasm": _USD_WASM_SRC.exists(),
     }))
     try:
