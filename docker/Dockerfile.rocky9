@@ -30,7 +30,7 @@ RUN dnf install -y epel-release && \
     dnf config-manager --set-enabled crb && \
     dnf update -y && \
     dnf groupinstall -y "Development Tools" && \
-    dnf install -y \
+    dnf install -y --allowerasing \
         cmake \
         ninja-build \
         gcc-toolset-12-gcc \
@@ -400,7 +400,7 @@ FROM rockylinux:9 AS runtime
 # Enable EPEL for runtime deps
 RUN dnf install -y epel-release && \
     dnf config-manager --set-enabled crb && \
-    dnf install -y \
+    dnf install -y --allowerasing \
         python3.11 \
         python3.11-pip \
         # Shared libs needed at runtime
