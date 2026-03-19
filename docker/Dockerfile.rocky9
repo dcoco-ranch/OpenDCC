@@ -227,6 +227,17 @@ RUN git clone --depth 1 --branch ${EMBREE_VERSION} \
     ninja -C /tmp/embree/build -j$(nproc) install && \
     rm -rf /tmp/embree
 
+# ── pugixml (needed by OSL 1.13+) ────────────────────────────────────────────
+ARG PUGIXML_VERSION=v1.14
+RUN git clone --depth 1 --branch ${PUGIXML_VERSION} \
+        https://github.com/zeux/pugixml.git /tmp/pugixml && \
+    cmake -S /tmp/pugixml -B /tmp/pugixml/build \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/deps && \
+    ninja -C /tmp/pugixml/build -j$(nproc) install && \
+    rm -rf /tmp/pugixml
+
 # ── OSL (Open Shading Language) 1.13.x ───────────────────────────────────────
 # v1.13.x supports LLVM 13-17 (Rocky 9 ships LLVM 16/17)
 ARG OSL_VERSION=v1.13.12.0
@@ -236,7 +247,7 @@ RUN git clone --depth 1 --branch ${OSL_VERSION} \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/osl \
-        -DCMAKE_PREFIX_PATH="/opt/oiio;/opt/ocio;/opt/boost" \
+        -DCMAKE_PREFIX_PATH="/opt/oiio;/opt/ocio;/opt/boost;/opt/deps" \
         -DBOOST_ROOT=/opt/boost \
         -DOSL_BUILD_TESTS=OFF \
         -DOSL_BUILD_PLUGINS=OFF \
