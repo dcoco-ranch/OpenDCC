@@ -593,12 +593,6 @@ async def stage_export_usda():
         media_type="model/vnd.usda",
         headers={"Cache-Control": "no-store"},
     )
-        usda = stage.GetRootLayer().ExportToString()
-    return Response(
-        content=usda,
-        media_type="model/vnd.usda",
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 # ── GLB export (for Three.js GLTFLoader in browser) ──────────────────────────
