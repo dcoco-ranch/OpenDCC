@@ -342,10 +342,8 @@ RUN cmake -S /tmp/usd_src -B /tmp/usd_build \
         -DPXR_BUILD_USDVIEW=OFF \
         -DPXR_ENABLE_QT_SUPPORT=OFF
 
-# Build with error output visible (ninja -j1 -v on failure to show the actual error)
-RUN ninja -C /tmp/usd_build -j$(nproc) install \
-    || (echo "=== BUILD FAILED — rebuilding with verbose to show error ===" && \
-        ninja -C /tmp/usd_build -j1 -k1 2>&1 | tail -80 && false)
+# Build USD
+RUN ninja -C /tmp/usd_build -j$(nproc) install
 
 RUN rm -rf /tmp/usd_src /tmp/usd_build
 
