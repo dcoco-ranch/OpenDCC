@@ -315,8 +315,9 @@ FROM builder AS usd_build
 
 ARG USD_VERSION=v24.11
 RUN git clone --depth 1 --branch ${USD_VERSION} \
-        https://github.com/PixarAnimationStudios/OpenUSD.git /tmp/usd_src && \
-    cmake -S /tmp/usd_src -B /tmp/usd_build \
+        https://github.com/PixarAnimationStudios/OpenUSD.git /tmp/usd_src
+
+RUN cmake -S /tmp/usd_src -B /tmp/usd_build \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/usd \
@@ -338,9 +339,14 @@ RUN git clone --depth 1 --branch ${USD_VERSION} \
         -DPXR_BUILD_OPENIMAGEIO_PLUGIN=ON \
         -DPXR_BUILD_OPENCOLORIO_PLUGIN=ON \
         -DPXR_BUILD_USDVIEW=OFF \
-        -DPXR_ENABLE_QT_SUPPORT=OFF && \
-    ninja -C /tmp/usd_build -j$(nproc) install && \
-    rm -rf /tmp/usd_src /tmp/usd_build
+        -DPXR_ENABLE_QT_SUPPORT=OFF
+
+# Build with error output visible (ninja -j1 -v on failure to show the actual error)
+RUN ninja -C /tmp/usd_build -j$(nproc) install \
+    || (echo "=== BUILD FAILED — rebuilding with verbose to show error ===" && \
+        ninja -C /tmp/usd_build -j1 -k1 2>&1 | tail -80 && false)
+
+RUN rm -rf /tmp/usd_src /tmp/usd_build
 
 
 # ─────────────────────────────────────────────────────────────────────────────
