@@ -84,13 +84,17 @@ if [[ "$SKIP_SYSTEM_PACKAGES" -eq 0 ]]; then
         libffi-devel readline-devel \
         libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel \
         libXext-devel libXrender-devel libXfixes-devel \
-        libXcomposite-devel libXdamage-devel \
+        libXcomposite-devel libXdamage-devel libXxf86vm-devel \
+        libX11-devel mesa-libEGL-devel \
         libxkbcommon-devel libxkbcommon-x11-devel \
-        wayland-devel fontconfig-devel freetype-devel \
+        wayland-devel fontconfig-devel freetype-devel harfbuzz-devel \
         xcb-util-devel xcb-util-wm-devel xcb-util-image-devel \
         xcb-util-keysyms-devel xcb-util-renderutil-devel \
         alsa-lib-devel pulseaudio-libs-devel \
         libsndfile-devel libjpeg-turbo-devel libpng-devel libtiff-devel \
+        libwebp-devel giflib-devel libzstd-devel \
+        llvm-devel clang-devel clang-libs \
+        sqlite-devel \
         git curl wget patch which nasm autoconf automake libtool pkgconfig
 
     # Set python3.11 as default
@@ -234,7 +238,8 @@ if [[ ! -f "$OSD_PREFIX/lib/libosdCPU.so" ]] && \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$OSD_PREFIX" \
         -DNO_TUTORIALS=ON -DNO_EXAMPLES=ON -DNO_REGRESSION=ON \
-        -DNO_DOC=ON -DNO_OMP=ON -DNO_CUDA=ON -DNO_OPENCL=ON -DNO_PTEX=ON
+        -DNO_DOC=ON -DNO_OMP=ON -DNO_CUDA=ON -DNO_OPENCL=ON -DNO_PTEX=ON \
+        -DNO_GLFW=ON -DNO_GLFW_X11=ON
     ninja -C osd/build -j"$JOBS" install
     log "OpenSubdiv installed to $OSD_PREFIX"
 else
@@ -358,15 +363,17 @@ fi
 OSL_PREFIX="$PREFIX/osl"
 if [[ ! -f "$OSL_PREFIX/lib/liboslexec.so" ]] && \
    [[ ! -f "$OSL_PREFIX/lib64/liboslexec.so" ]]; then
-    log "Building OSL v1.12.14.0..."
+    log "Building OSL v1.13.12.0..."
     cd "$TMPDIR"
-    git clone --depth 1 --branch v1.12.14.0 \
+    git clone --depth 1 --branch v1.13.12.0 \
         https://github.com/AcademySoftwareFoundation/OpenShadingLanguage.git osl
     cmake -S osl -B osl/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$OSL_PREFIX" \
         -DCMAKE_PREFIX_PATH="$OIIO_PREFIX;$OCIO_PREFIX;$BOOST_PREFIX" \
-        -DOSL_BUILD_TESTS=OFF -DOSL_BUILD_PLUGINS=OFF -DUSE_QT=OFF
+        -DBOOST_ROOT="$BOOST_PREFIX" \
+        -DOSL_BUILD_TESTS=OFF -DOSL_BUILD_PLUGINS=OFF \
+        -DOSL_BUILD_MATERIALX=OFF -DUSE_QT=OFF -DUSE_PYTHON=OFF
     ninja -C osl/build -j"$JOBS" install
     log "OSL installed to $OSL_PREFIX"
 else

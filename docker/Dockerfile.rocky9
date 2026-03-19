@@ -2,48 +2,50 @@
 # OpenDCC  —  Rocky Linux 9 / VFX Platform 2023 multi-stage Docker build
 #
 # Build context:  ShapeFX/   (parent of OpenDCC/ AND usd-viewer/)
-# Build with:     docker-compose -f OpenDCC/docker/docker-compose.yml build rocky9
+# Build with:     cd OpenDCC/docker && bash build.sh rocky9
 #              or docker build -f OpenDCC/docker/Dockerfile.rocky9 \
-#                              -t opendcc:rocky9 \
-#                              ../..
+#                              -t opendcc:rocky9 ../..
 #
 # Stages
-#   base           – Rocky 9 with system + VFX deps (Qt 5.15, Boost, TBB, etc.)
-#   builder        – builds all third-party C++ deps (ADS, sentry, OpenMesh, etc.)
-#   usd_build      – compiles OpenUSD 23.05 from source
-#   opendcc_build  – compiles OpenDCC with CMake/Ninja
-#   runtime        – minimal image: compiled binaries + web server + usd-wasm
-#
-# VFX Reference Platform 2023 targets:
-#   GCC 11.x, Python 3.10, Qt 5.15, Boost 1.80, TBB 2020.3,
-#   OpenEXR 3.1, OCIO 2.1, OIIO 2.4, OpenSubdiv 3.5, USD 23.05
+#   base           – Rocky 9 with all -devel packages
+#   builder        – builds all third-party C++ deps from source
+#   usd_build      – compiles OpenUSD 23.05
+#   opendcc_build  – compiles OpenDCC
+#   runtime        – minimal image: binaries + web server
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 0 – Rocky 9 base with development tools
+# Stage 0 – Rocky 9 base with ALL development packages
 # ─────────────────────────────────────────────────────────────────────────────
 FROM rockylinux:9 AS base
 
-# Enable EPEL + CRB (CodeReady Builder) for extra dev packages
 RUN dnf install -y epel-release && \
     dnf config-manager --set-enabled crb && \
     dnf update -y && \
     dnf groupinstall -y "Development Tools" && \
     dnf install -y --allowerasing \
+        # ── Compiler ──────────────────────────────────────────────────────
         cmake \
         ninja-build \
         gcc-toolset-12-gcc \
         gcc-toolset-12-gcc-c++ \
+        # ── Python ────────────────────────────────────────────────────────
         python3.11 \
         python3.11-devel \
         python3.11-pip \
-        # Core VFX / build deps
+        # ── VFX core libs ─────────────────────────────────────────────────
         boost-devel \
         tbb-devel \
         glew-devel \
+        openexr-devel \
+        imath-devel \
+        eigen3-devel \
+        # ── GL / X11 / Wayland (comprehensive) ───────────────────────────
         mesa-libGL-devel \
         mesa-libGLU-devel \
+        mesa-libEGL-devel \
+        libX11-devel \
         libXrandr-devel \
         libXinerama-devel \
         libXcursor-devel \
@@ -53,6 +55,7 @@ RUN dnf install -y epel-release && \
         libXfixes-devel \
         libXcomposite-devel \
         libXdamage-devel \
+        libXxf86vm-devel \
         libxkbcommon-devel \
         libxkbcommon-x11-devel \
         wayland-devel \
@@ -61,20 +64,38 @@ RUN dnf install -y epel-release && \
         xcb-util-image-devel \
         xcb-util-keysyms-devel \
         xcb-util-renderutil-devel \
+        # ── Image libs (Qt, OIIO) ────────────────────────────────────────
+        libjpeg-turbo-devel \
+        libpng-devel \
+        libtiff-devel \
+        libwebp-devel \
+        giflib-devel \
+        # ── Font / text ───────────────────────────────────────────────────
         fontconfig-devel \
         freetype-devel \
-        # Image / color libs
-        openexr-devel \
-        imath-devel \
-        # Networking / IPC
+        harfbuzz-devel \
+        # ── Audio / multimedia ────────────────────────────────────────────
+        alsa-lib-devel \
+        pulseaudio-libs-devel \
+        libsndfile-devel \
+        # ── Networking / IPC ──────────────────────────────────────────────
         zeromq-devel \
         cppzmq-devel \
-        # Math / physics
-        eigen3-devel \
+        openssl-devel \
+        # ── Physics ───────────────────────────────────────────────────────
         bullet-devel \
-        # Graphviz (node editor)
+        # ── Graph / node editor ───────────────────────────────────────────
         graphviz-devel \
-        # Misc
+        # ── LLVM/Clang (needed by OSL + Shiboken) ────────────────────────
+        llvm-devel \
+        clang-devel \
+        clang-libs \
+        # ── Compression / archive ─────────────────────────────────────────
+        zlib-devel \
+        bzip2-devel \
+        xz-devel \
+        libzstd-devel \
+        # ── Misc build tools ──────────────────────────────────────────────
         git \
         curl \
         wget \
@@ -87,31 +108,22 @@ RUN dnf install -y epel-release && \
         automake \
         libtool \
         pkgconfig \
-        openssl-devel \
-        zlib-devel \
-        # Image libs (needed by Qt -system-libjpeg / -system-libpng)
-        libjpeg-turbo-devel \
-        libpng-devel \
-        libtiff-devel \
-        # Multimedia / Qt deps
-        alsa-lib-devel \
-        pulseaudio-libs-devel \
-        libsndfile-devel \
+        libffi-devel \
+        readline-devel \
+        sqlite-devel \
     && dnf clean all
 
-# Use GCC 12 from gcc-toolset-12 by default
+# GCC 12
 ENV PATH="/opt/rh/gcc-toolset-12/root/usr/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/opt/rh/gcc-toolset-12/root/usr/lib64:${LD_LIBRARY_PATH}"
 ENV CC=/opt/rh/gcc-toolset-12/root/usr/bin/gcc
 ENV CXX=/opt/rh/gcc-toolset-12/root/usr/bin/g++
 
-# Make python3.11 the default python3
+# Python 3.11
 RUN alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
     alternatives --set python3 /usr/bin/python3.11 && \
-    python3 -m pip install --upgrade pip setuptools wheel
-
-# Symlink for CMake to find Python
-RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+    python3 -m pip install --upgrade pip setuptools wheel && \
+    ln -sf /usr/bin/python3.11 /usr/local/bin/python3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,8 +132,6 @@ RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python3
 FROM base AS builder
 
 # ── Qt 5.15 from source ──────────────────────────────────────────────────────
-# Rocky 9 ships Qt 5.15 but may lack some modules; build from source for
-# full control and VFX Platform compliance.
 ARG QT_VERSION=5.15.12
 ARG QT_MAJOR_MINOR=5.15
 RUN cd /tmp && \
@@ -160,8 +170,7 @@ ENV CMAKE_PREFIX_PATH="/opt/qt5:${CMAKE_PREFIX_PATH}"
 RUN pip3 install --no-cache-dir PySide2 shiboken2 || \
     echo "⚠  PySide2 wheel unavailable — will build from source if needed"
 
-# ── Boost.Python (ensure boost_python links to Python 3.11) ──────────────────
-# Rocky 9 boost-devel may link to system python3.9; rebuild boost_python
+# ── Boost 1.80 (with ALL commonly needed components + Python 3.11) ───────────
 ARG BOOST_VERSION=1.80.0
 ARG BOOST_VERSION_US=1_80_0
 RUN cd /tmp && \
@@ -176,6 +185,8 @@ RUN cd /tmp && \
          --with-program_options --with-regex --with-date_time \
          --with-serialization --with-iostreams --with-atomic \
          --with-chrono --with-locale --with-log --with-wave \
+         --with-random --with-container --with-math \
+         --with-type_erasure --with-test \
          variant=release link=shared threading=multi \
          install --prefix=/opt/boost -j$(nproc) && \
     rm -rf /tmp/boost*
@@ -190,6 +201,7 @@ RUN git clone --depth 1 --branch ${OCIO_VERSION} \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/ocio \
+        -DBOOST_ROOT=/opt/boost \
         -DOCIO_BUILD_APPS=OFF \
         -DOCIO_BUILD_TESTS=OFF \
         -DOCIO_BUILD_GPU_TESTS=OFF \
@@ -207,14 +219,27 @@ RUN git clone --depth 1 --branch ${OIIO_VERSION} \
         -DCMAKE_INSTALL_PREFIX=/opt/oiio \
         -DCMAKE_PREFIX_PATH="/opt/ocio;/opt/boost" \
         -DBOOST_ROOT=/opt/boost \
+        -DBoost_NO_SYSTEM_PATHS=ON \
         -DOIIO_BUILD_TESTS=OFF \
         -DOIIO_BUILD_TOOLS=OFF \
         -DUSE_PYTHON=OFF \
-        -DUSE_QT=OFF && \
+        -DUSE_QT=OFF \
+        -DUSE_OPENCV=OFF \
+        -DUSE_R3DSDK=OFF \
+        -DUSE_Nuke=OFF \
+        -DUSE_DCMTK=OFF \
+        -DUSE_FFmpeg=OFF \
+        -DUSE_Field3D=OFF \
+        -DUSE_LibRaw=OFF \
+        -DUSE_OpenJPEG=OFF \
+        -DUSE_OpenVDB=OFF \
+        -DUSE_Ptex=OFF && \
     ninja -C /tmp/oiio/build -j$(nproc) install && \
     rm -rf /tmp/oiio
 
 # ── OpenSubdiv 3.5 ───────────────────────────────────────────────────────────
+# NO_GLFW=ON: we only need the library, not the interactive viewer
+# NO_GLFW_X11=ON: avoids the libXxf86vm GLFW dependency
 ARG OSD_VERSION=v3_5_0
 RUN git clone --depth 1 --branch ${OSD_VERSION} \
         https://github.com/PixarAnimationStudios/OpenSubdiv.git /tmp/osd && \
@@ -229,7 +254,9 @@ RUN git clone --depth 1 --branch ${OSD_VERSION} \
         -DNO_OMP=ON \
         -DNO_CUDA=ON \
         -DNO_OPENCL=ON \
-        -DNO_PTEX=ON && \
+        -DNO_PTEX=ON \
+        -DNO_GLFW=ON \
+        -DNO_GLFW_X11=ON && \
     ninja -C /tmp/osd/build -j$(nproc) install && \
     rm -rf /tmp/osd
 
@@ -242,7 +269,8 @@ RUN git clone --depth 1 --branch ${EMBREE_VERSION} \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/embree \
         -DEMBREE_TUTORIALS=OFF \
-        -DEMBREE_ISPC_SUPPORT=OFF && \
+        -DEMBREE_ISPC_SUPPORT=OFF \
+        -DEMBREE_STATIC_LIB=OFF && \
     ninja -C /tmp/embree/build -j$(nproc) install && \
     rm -rf /tmp/embree
 
@@ -283,7 +311,8 @@ RUN git clone --depth 1 --branch ${SENTRY_VERSION} --recurse-submodules \
     ninja -C /tmp/sentry/build -j$(nproc) install && \
     rm -rf /tmp/sentry
 
-# ── OpenMesh ──────────────────────────────────────────────────────────────────
+# ── OpenMesh 9.0 ─────────────────────────────────────────────────────────────
+# Archive extracts as OpenMesh-9.0.0/ (not OpenMesh-9.0/)
 ARG OPENMESH_VERSION=9.0
 RUN curl -fsSL "https://www.graphics.rwth-aachen.de/media/openmesh_static/Releases/${OPENMESH_VERSION}/OpenMesh-${OPENMESH_VERSION}.tar.bz2" \
         | tar -xj -C /tmp && \
@@ -299,9 +328,10 @@ RUN curl -fsSL "https://www.graphics.rwth-aachen.de/media/openmesh_static/Releas
 RUN git clone --depth 1 https://github.com/libigl/libigl.git /opt/deps/include/igl_src && \
     ln -s /opt/deps/include/igl_src/include/igl /opt/deps/include/igl
 
-# ── OSL (Open Shading Language) ──────────────────────────────────────────────
-# Build a minimal OSL for OpenDCC (shader compiler + runtime)
-ARG OSL_VERSION=v1.12.14.0
+# ── OSL (Open Shading Language) 1.13.x ───────────────────────────────────────
+# v1.13.x supports LLVM 13-17 (Rocky 9 ships LLVM 16/17)
+# v1.12.x only supports LLVM 11-15 — won't work on Rocky 9
+ARG OSL_VERSION=v1.13.12.0
 RUN git clone --depth 1 --branch ${OSL_VERSION} \
         https://github.com/AcademySoftwareFoundation/OpenShadingLanguage.git /tmp/osl && \
     cmake -S /tmp/osl -B /tmp/osl/build \
@@ -309,27 +339,31 @@ RUN git clone --depth 1 --branch ${OSL_VERSION} \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/osl \
         -DCMAKE_PREFIX_PATH="/opt/oiio;/opt/ocio;/opt/boost" \
+        -DBOOST_ROOT=/opt/boost \
         -DOSL_BUILD_TESTS=OFF \
         -DOSL_BUILD_PLUGINS=OFF \
-        -DUSE_QT=OFF && \
+        -DOSL_BUILD_MATERIALX=OFF \
+        -DUSE_QT=OFF \
+        -DUSE_PYTHON=OFF && \
     ninja -C /tmp/osl/build -j$(nproc) install && \
     rm -rf /tmp/osl
 
-# ── Alembic ───────────────────────────────────────────────────────────────────
-ARG ALEMBIC_VERSION=1.8.5
+# ── Alembic 1.8.6 ────────────────────────────────────────────────────────────
+ARG ALEMBIC_VERSION=1.8.6
 RUN git clone --depth 1 --branch ${ALEMBIC_VERSION} \
         https://github.com/alembic/alembic.git /tmp/alembic && \
     cmake -S /tmp/alembic -B /tmp/alembic/build \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/deps \
+        -DBOOST_ROOT=/opt/boost \
         -DUSE_TESTS=OFF \
         -DUSE_BINARIES=OFF \
         -DUSE_HDF5=OFF && \
     ninja -C /tmp/alembic/build -j$(nproc) install && \
     rm -rf /tmp/alembic
 
-# ── MaterialX ────────────────────────────────────────────────────────────────
+# ── MaterialX 1.38.8 ─────────────────────────────────────────────────────────
 ARG MATERIALX_VERSION=v1.38.8
 RUN git clone --depth 1 --branch ${MATERIALX_VERSION} \
         https://github.com/AcademySoftwareFoundation/MaterialX.git /tmp/materialx && \
@@ -366,7 +400,9 @@ RUN git clone --depth 1 --branch ${USD_VERSION} \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/usd \
-        -DCMAKE_PREFIX_PATH="/opt/boost;/opt/ocio;/opt/oiio;/opt/osd;/opt/embree;/opt/qt5;/opt/deps" \
+        -DCMAKE_PREFIX_PATH="/opt/boost;/opt/ocio;/opt/oiio;/opt/osd;/opt/embree;/opt/qt5;/opt/deps;/opt/osl" \
+        -DBOOST_ROOT=/opt/boost \
+        -DBoost_NO_SYSTEM_PATHS=ON \
         -DPXR_BUILD_TESTS=OFF \
         -DPXR_BUILD_EXAMPLES=OFF \
         -DPXR_BUILD_TUTORIALS=OFF \
@@ -380,7 +416,7 @@ RUN git clone --depth 1 --branch ${USD_VERSION} \
         -DPXR_BUILD_ALEMBIC_PLUGIN=ON \
         -DPXR_ENABLE_MATERIALX_SUPPORT=ON && \
     ninja -C /tmp/usd_build -j$(nproc) install && \
-    rm -rf /tmp/usd_src /tmp/usd_build /opt/usd/src /opt/usd/build
+    rm -rf /tmp/usd_src /tmp/usd_build
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -397,6 +433,8 @@ RUN cmake -S /src/OpenDCC -B /src/build \
     -DCMAKE_INSTALL_PREFIX=/opt/opendcc \
     -DUSD_ROOT=/opt/usd \
     -DCMAKE_PREFIX_PATH="/opt/qt5;/opt/boost;/opt/deps;/opt/usd;/opt/ocio;/opt/oiio;/opt/osd;/opt/embree;/opt/osl" \
+    -DBOOST_ROOT=/opt/boost \
+    -DBoost_NO_SYSTEM_PATHS=ON \
     -DPython3_ROOT_DIR=/usr \
     -DPython3_EXECUTABLE=/usr/bin/python3.11 \
     -DDCC_PYSIDE_CMAKE_FIND=OFF \
@@ -420,13 +458,12 @@ RUN cmake -S /src/OpenDCC -B /src/build \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM rockylinux:9 AS runtime
 
-# Enable EPEL for runtime deps
 RUN dnf install -y epel-release && \
     dnf config-manager --set-enabled crb && \
     dnf install -y --allowerasing \
         python3.11 \
         python3.11-pip \
-        # Shared libs needed at runtime
+        # Runtime shared libs
         boost-system \
         boost-filesystem \
         boost-thread \
@@ -436,29 +473,37 @@ RUN dnf install -y epel-release && \
         boost-serialization \
         boost-iostreams \
         boost-atomic \
+        boost-chrono \
+        boost-locale \
         tbb \
         glew \
         mesa-libGL \
         mesa-libGLU \
+        mesa-libEGL \
         mesa-dri-drivers \
+        libX11 \
         libXrandr \
         libXinerama \
         libXcursor \
         libXi \
+        libXxf86vm \
         libxkbcommon \
         libxkbcommon-x11 \
         fontconfig \
         freetype \
+        libjpeg-turbo \
+        libpng \
+        libtiff \
         zeromq \
         graphviz \
         openexr-libs \
         imath \
-        eigen3 \
+        llvm-libs \
         alsa-lib \
         curl \
     && dnf clean all
 
-# Make python3.11 the default
+# Python 3.11
 RUN alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
     alternatives --set python3 /usr/bin/python3.11
 
@@ -493,14 +538,13 @@ ENV OPENDCC_ROOT=/opt/opendcc
 ENV USD_VIEWER_PATH=/opt/usd-viewer
 ENV PATH="/opt/qt5/bin:/opt/usd/bin:${PATH}"
 
-# Headless Qt (no display required for web server)
+# Headless Qt
 ENV QT_QPA_PLATFORM=offscreen
 ENV DISPLAY=
 
 WORKDIR /opt/opendcc
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
