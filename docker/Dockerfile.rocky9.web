@@ -43,8 +43,12 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements_web.txt && \
 COPY OpenDCC/web/ /app/web/
 
 # ── usd-wasm (optional — run docker/build.sh to create stubs if missing) ─────
-COPY usd-viewer/usd-wasm/src     /opt/usd-viewer/usd-wasm/src
-COPY usd-viewer/public/modules   /opt/usd-viewer/public/modules
+# ── usd-wasm (Hydra WASM + Three.js render delegate — cloned at build time) ──
+RUN git clone --depth 1 https://github.com/nicholasc/usd-viewer.git /tmp/usd-viewer && \
+    mkdir -p /opt/usd-viewer/usd-wasm /opt/usd-viewer/public && \
+    cp -r /tmp/usd-viewer/usd-wasm/src /opt/usd-viewer/usd-wasm/src && \
+    cp -r /tmp/usd-viewer/public/modules /opt/usd-viewer/public/modules && \
+    rm -rf /tmp/usd-viewer
 
 # ── Environment ──────────────────────────────────────────────────────────────
 ENV USD_VIEWER_PATH=/opt/usd-viewer

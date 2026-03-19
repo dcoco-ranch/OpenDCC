@@ -4,6 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpenDCC Web</title>
+
+  <!--
+    es-module-shims: import-map polyfill for browsers without native support.
+    Served from the usd-viewer repo at /modules/
+  -->
+  <script async src="/modules/es-module-shims@1.8.0.js"></script>
+
+  <!--
+    Import map – must use THREE r163 to match ThreeJsRenderDelegate.js imports.
+    All relative module imports from usd-wasm/src/hydra/ resolve against this map.
+  -->
   <script type="importmap">
   {
     "imports": {
@@ -12,62 +23,219 @@
     }
   }
   </script>
+
+  <!--
+    Eagerly download three.js so the module cache is warm before the render
+    delegate tries to import it. This shaves ~300 ms off first load.
+  -->
+  <script type="module" src="https://unpkg.com/three@0.163.0/build/three.module.js"></script>
+
   <style>
+    /* ── Reset ─────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     :root {
-      --bg:#2a2a2a;--bg2:#333;--bg3:#3d3d3d;--border:#555;--text:#d0d0d0;--text2:#999;
-      --accent:#5a8fc2;--accent2:#3a6f9f;--danger:#c25a5a;--success:#5ac274;--panel:#282828;
-      --header-h:38px;--toolbar-h:34px;--status-h:22px;
+      --bg:        #2a2a2a;
+      --bg2:       #333;
+      --bg3:       #3d3d3d;
+      --border:    #555;
+      --text:      #d0d0d0;
+      --text2:     #999;
+      --accent:    #5a8fc2;
+      --accent2:   #3a6f9f;
+      --danger:    #c25a5a;
+      --success:   #5ac274;
+      --panel:     #282828;
+      --header-h:  38px;
+      --toolbar-h: 34px;
+      --status-h:  22px;
     }
-    html,body{height:100%;width:100%;background:var(--bg);color:var(--text);font:12px/1.5 "Segoe UI",system-ui,sans-serif;overflow:hidden}
-    #app{display:grid;grid-template-rows:var(--header-h) var(--toolbar-h) 1fr var(--status-h);grid-template-columns:220px 1fr 260px;height:100vh}
-    #header{grid-column:1/-1;display:flex;align-items:center;gap:10px;padding:0 12px;background:#1e1e1e;border-bottom:1px solid var(--border);user-select:none}
-    #header .logo{font-weight:700;font-size:13px;color:var(--accent);letter-spacing:.5px}
-    #header .version{font-size:10px;color:var(--text2)}
-    #header .spacer{flex:1}
-    #toolbar{grid-column:1/-1;display:flex;align-items:center;gap:6px;padding:0 10px;background:var(--bg2);border-bottom:1px solid var(--border)}
-    #toolbar label{font-size:11px;color:var(--text2);margin-left:6px}
-    #outliner,#properties{background:var(--panel);display:flex;flex-direction:column;overflow:hidden}
-    #outliner{border-right:1px solid var(--border)}#properties{border-left:1px solid var(--border)}
-    .panel-header{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;font-weight:600;letter-spacing:.3px;user-select:none;flex-shrink:0}
-    .scroll{flex:1;overflow-y:auto}.scroll::-webkit-scrollbar{width:6px}.scroll::-webkit-scrollbar-thumb{background:#555;border-radius:3px}
-    #viewport-wrap{position:relative;background:#111;overflow:hidden}
-    #viewport-wrap canvas{display:block;position:absolute;inset:0}
-    #vp-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:10}
-    #vp-msg{color:var(--text2);font-size:11px;text-align:center;background:rgba(0,0,0,.5);padding:8px 14px;border-radius:4px;max-width:320px;line-height:1.6}
-    #prim-tree{padding:4px 0;font-size:11px}
-    .prim-row{display:flex;align-items:center;gap:4px;padding:2px 6px;padding-left:calc(6px + var(--depth,0)*12px);cursor:pointer;white-space:nowrap}
-    .prim-row:hover{background:rgba(90,143,194,.2)}.prim-row.selected{background:rgba(90,143,194,.4)}
-    .prim-toggle{font-size:9px;color:var(--text2);width:12px}.prim-type{color:var(--text2);font-size:10px}
-    #attr-table{width:100%;border-collapse:collapse;font-size:11px}
-    #attr-table td{padding:3px 8px;border-bottom:1px solid #3a3a3a;vertical-align:top}
-    #attr-table td:first-child{color:var(--text2);width:38%}
-    #attr-table tr:hover td{background:rgba(255,255,255,.04)}
-    .attr-editable{cursor:text}.attr-editable:hover{background:rgba(90,143,194,.15)!important}
-    .attr-input{width:100%;background:#222;border:1px solid var(--accent);color:var(--text);font:11px monospace;padding:1px 4px}
-    #script-panel{position:absolute;inset:0;background:rgba(20,20,20,.97);display:none;flex-direction:column;z-index:20}
-    #script-panel.open{display:flex}
-    #script-editor{flex:1;background:#1e1e1e;color:#d4d4d4;border:none;resize:none;font:13px/1.5 "Fira Code","Cascadia Code",monospace;padding:10px;outline:none}
-    #script-output{height:120px;background:#111;color:#aaa;font:11px/1.4 "Fira Code",monospace;padding:6px 10px;overflow-y:auto;border-top:1px solid var(--border);white-space:pre}
-    #open-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center}
-    #open-modal.open{display:flex}
-    #open-modal .box{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:20px;width:440px}
-    #open-modal h3{margin-bottom:12px;font-size:13px}
-    #statusbar{grid-column:1/-1;display:flex;align-items:center;gap:10px;padding:0 10px;background:#1a1a1a;border-top:1px solid var(--border);font-size:10px;color:var(--text2)}
-    .ws-dot{width:7px;height:7px;border-radius:50%;background:#777;flex-shrink:0;transition:background .3s}
-    .ws-dot.ok{background:var(--success)}.ws-dot.error{background:var(--danger)}
-    button{padding:3px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;color:var(--text);font:11px system-ui;cursor:pointer;transition:background .1s}
-    button:hover{background:#4a4a4a}button:active{background:var(--accent2)}
-    button.primary{background:var(--accent2);border-color:var(--accent)}button.primary:hover{background:var(--accent)}
-    input[type="text"]{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:3px 7px;font:11px system-ui;width:100%;margin-bottom:10px}
-    input[type="text"]:focus{outline:none;border-color:var(--accent)}
-    /* Create prim toolbar */
-    .create-bar{display:flex;flex-wrap:wrap;gap:3px;padding:4px 6px;border-bottom:1px solid var(--border)}
-    .create-bar button{padding:1px 6px;font-size:10px}
+
+    html, body {
+      height: 100%; width: 100%;
+      background: var(--bg); color: var(--text);
+      font: 12px/1.5 "Segoe UI", system-ui, sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── App grid ─────────────────────────────────────────────────────── */
+    #app {
+      display: grid;
+      grid-template-rows: var(--header-h) var(--toolbar-h) 1fr var(--status-h);
+      grid-template-columns: 220px 1fr 260px;
+      height: 100vh;
+    }
+
+    /* Header */
+    #header {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; gap: 10px; padding: 0 12px;
+      background: #1e1e1e; border-bottom: 1px solid var(--border);
+      user-select: none;
+    }
+    #header .logo    { font-weight: 700; font-size: 13px; color: var(--accent); letter-spacing:.5px }
+    #header .version { font-size: 10px; color: var(--text2); }
+    #header .spacer  { flex: 1; }
+
+    /* Toolbar */
+    #toolbar {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; gap: 6px; padding: 0 10px;
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+    }
+    #toolbar label { font-size: 11px; color: var(--text2); margin-left: 6px; }
+    #toolbar select {
+      background: var(--bg3); border: 1px solid var(--border);
+      color: var(--text); font-size: 11px; padding: 2px 4px; border-radius: 3px;
+    }
+
+    /* Panels */
+    #outliner, #properties {
+      background: var(--panel); display: flex; flex-direction: column; overflow: hidden;
+    }
+    #outliner  { border-right: 1px solid var(--border); }
+    #properties{ border-left:  1px solid var(--border); }
+
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 8px;
+      background: var(--bg3); border-bottom: 1px solid var(--border);
+      font-size: 11px; font-weight: 600; letter-spacing: .3px;
+      user-select: none; flex-shrink: 0;
+    }
+    .scroll { flex: 1; overflow-y: auto; }
+    .scroll::-webkit-scrollbar { width: 6px; }
+    .scroll::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+
+    /* Viewport */
+    #viewport-wrap {
+      position: relative; background: #0e0e0e; overflow: hidden;
+    }
+    /* Three.js renderer appends its canvas to #viewport-wrap */
+    #viewport-wrap canvas {
+      display: block; position: absolute; inset: 0;
+    }
+
+    /* Loading / status overlay */
+    #vp-overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      pointer-events: none; z-index: 10;
+    }
+    #vp-msg {
+      color: var(--text2); font-size: 11px; text-align: center;
+      background: rgba(0,0,0,.5); padding: 8px 14px; border-radius: 4px;
+      max-width: 320px; line-height: 1.6;
+    }
+    .progress-bar {
+      width: 220px; height: 4px; background: #333; border-radius: 2px; margin-top: 8px; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; background: var(--accent); border-radius: 2px;
+      transition: width .15s ease; width: 0%;
+    }
+
+    /* Prim tree */
+    #prim-tree { padding: 4px 0; font-size: 11px; }
+    .prim-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 2px 6px;
+      padding-left: calc(6px + var(--depth,0) * 12px);
+      cursor: pointer; white-space: nowrap;
+    }
+    .prim-row:hover    { background: rgba(90,143,194,.2); }
+    .prim-row.selected { background: rgba(90,143,194,.4); }
+    .prim-toggle { font-size: 9px; color: var(--text2); width: 12px; }
+    .prim-type   { color: var(--text2); font-size: 10px; }
+
+    /* Properties */
+    #attr-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    #attr-table td {
+      padding: 3px 8px; border-bottom: 1px solid #3a3a3a; vertical-align: top;
+    }
+    #attr-table td:first-child { color: var(--text2); width: 38%; }
+    #attr-table tr:hover td    { background: rgba(255,255,255,.04); }
+    .attr-editable { cursor: text; }
+    .attr-editable:hover { background: rgba(90,143,194,.15) !important; }
+    .attr-input {
+      width: 100%; background: #222; border: 1px solid var(--accent);
+      color: var(--text); font: 11px monospace; padding: 1px 4px;
+    }
+
+    /* Script overlay */
+    #script-panel {
+      position: absolute; inset: 0;
+      background: rgba(20,20,20,.97);
+      display: none; flex-direction: column; z-index: 20;
+    }
+    #script-panel.open { display: flex; }
+    #script-editor {
+      flex: 1; background: #1e1e1e; color: #d4d4d4;
+      border: none; resize: none;
+      font: 13px/1.5 "Fira Code", "Cascadia Code", monospace;
+      padding: 10px; outline: none;
+    }
+    #script-output {
+      height: 120px; background: #111; color: #aaa;
+      font: 11px/1.4 "Fira Code", monospace;
+      padding: 6px 10px; overflow-y: auto;
+      border-top: 1px solid var(--border); white-space: pre;
+    }
+
+    /* Open modal */
+    #open-modal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.6); z-index: 200;
+      align-items: center; justify-content: center;
+    }
+    #open-modal.open { display: flex; }
+    #open-modal .box {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 20px; width: 440px;
+    }
+    #open-modal h3 { margin-bottom: 12px; font-size: 13px; }
+
+    /* Status bar */
+    #statusbar {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; gap: 10px; padding: 0 10px;
+      background: #1a1a1a; border-top: 1px solid var(--border);
+      font-size: 10px; color: var(--text2);
+    }
+    .ws-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: #777; flex-shrink: 0;
+      transition: background .3s;
+    }
+    .ws-dot.ok    { background: var(--success); }
+    .ws-dot.error { background: var(--danger);  }
+
+    /* Shared controls */
+    button {
+      padding: 3px 10px;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 3px; color: var(--text); font: 11px system-ui;
+      cursor: pointer; transition: background .1s;
+    }
+    button:hover   { background: #4a4a4a; }
+    button:active  { background: var(--accent2); }
+    button.primary { background: var(--accent2); border-color: var(--accent); }
+    button.primary:hover { background: var(--accent); }
+
+    input[type="text"] {
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: 3px; padding: 3px 7px; font: 11px system-ui;
+      width: 100%;
+    }
+    input[type="text"]:focus { outline: none; border-color: var(--accent); }
+    input[type="text"] { margin-bottom: 10px; }
   </style>
 </head>
 <body>
+
 <div id="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
   <div id="header">
     <span class="logo">OpenDCC</span>
     <span class="version" id="dcc-version">web</span>
@@ -77,29 +245,45 @@
     <button onclick="saveStage()">Save</button>
     <button onclick="toggleScript()">Script Editor</button>
   </div>
+
+  <!-- ── Toolbar ────────────────────────────────────────────────────────── -->
   <div id="toolbar">
     <label>Stage:</label>
     <span id="stage-label" style="color:var(--text2);font-size:11px;margin-left:4px">—</span>
     <span style="flex:1"></span>
     <button onclick="frameAll()" title="Frame all (F)">⊡ Frame</button>
-    <button onclick="reloadStage()" title="Reload scene from server">↻ Reload</button>
+    <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
   </div>
+
+  <!-- ── Outliner ───────────────────────────────────────────────────────── -->
   <div id="outliner">
-    <div class="panel-header">Outliner <button style="padding:1px 6px;font-size:10px" onclick="refreshPrims()">↻</button></div>
-    <div class="create-bar">
-      <button onclick="createPrim('Cube')">+Cube</button>
-      <button onclick="createPrim('Sphere')">+Sphere</button>
-      <button onclick="createPrim('Cylinder')">+Cyl</button>
-      <button onclick="createPrim('Plane')">+Plane</button>
-      <button onclick="createPrim('Xform')">+Xform</button>
-      <button onclick="createPrim('SphereLight')">+Light</button>
-      <button onclick="createPrim('Camera')">+Cam</button>
-      <button onclick="deletePrims()" style="color:var(--danger)">✕ Del</button>
+    <div class="panel-header">
+      Outliner
+      <button style="padding:1px 6px;font-size:10px" onclick="refreshPrims()">↻</button>
     </div>
-    <div class="scroll"><div id="prim-tree"><span style="color:var(--text2);padding:8px;display:block">No stage loaded</span></div></div>
+    <div class="scroll">
+      <div id="prim-tree">
+        <span style="color:var(--text2);padding:8px;display:block">No stage loaded</span>
+      </div>
+    </div>
   </div>
+
+  <!-- ── Viewport ───────────────────────────────────────────────────────── -->
   <div id="viewport-wrap">
-    <div id="vp-overlay"><div id="vp-msg">Loading viewport…</div></div>
+    <!-- Three.js canvas is appended here by the module script -->
+
+    <!-- Loading overlay -->
+    <div id="vp-overlay">
+      <div id="vp-msg">
+        Loading USD WASM…<br/>
+        <small style="color:#777">(~17 MB on first visit, cached after that)</small>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Script editor (overlaid on viewport) -->
     <div id="script-panel">
       <div class="panel-header" style="padding:6px 10px">
         Python Script Editor
@@ -109,17 +293,24 @@
           <button onclick="toggleScript()">✕</button>
         </div>
       </div>
-      <textarea id="script-editor" spellcheck="false" placeholder="# Globals: stage&#10;from pxr import UsdGeom&#10;for p in stage.TraverseAll():&#10;    print(p.GetPath())"></textarea>
+      <textarea id="script-editor" spellcheck="false"
+        placeholder="# Globals: app, session, stage&#10;from pxr import UsdGeom&#10;for p in stage.TraverseAll():&#10;    print(p.GetPath(), p.GetTypeName())"></textarea>
       <div id="script-output"></div>
     </div>
   </div>
+
+  <!-- ── Properties ─────────────────────────────────────────────────────── -->
   <div id="properties">
     <div class="panel-header">Properties</div>
     <div class="scroll" id="props-scroll">
-      <div id="prim-info" style="padding:8px;font-size:11px;color:var(--text2)">Select a prim to inspect</div>
+      <div id="prim-info" style="padding:8px;font-size:11px;color:var(--text2)">
+        Select a prim to inspect
+      </div>
       <table id="attr-table"><tbody id="attr-body"></tbody></table>
     </div>
   </div>
+
+  <!-- ── Status bar ─────────────────────────────────────────────────────── -->
   <div id="statusbar">
     <div class="ws-dot" id="ws-dot"></div>
     <span id="ws-label">Connecting…</span>
@@ -127,11 +318,16 @@
     <span id="vp-stats" style="color:var(--text2)"></span>
     <span id="status-msg"></span>
   </div>
-</div>
+
+</div><!-- #app -->
+
+<!-- Open stage modal -->
 <div id="open-modal">
   <div class="box">
     <h3>Open USD Stage</h3>
-    <input type="text" id="stage-path-input" placeholder="/data/stages/kitchen.usda" onkeydown="if(event.key==='Enter')confirmOpenStage()"/>
+    <input type="text" id="stage-path-input"
+           placeholder="/data/scenes/kitchen.usda"
+           onkeydown="if(event.key==='Enter') confirmOpenStage()" />
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button onclick="document.getElementById('open-modal').classList.remove('open')">Cancel</button>
       <button class="primary" onclick="confirmOpenStage()">Open</button>
@@ -139,70 +335,69 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     THREE.JS VIEWPORT — GLB from server (no WASM)
-     ═══════════════════════════════════════════════════════════════════ -->
+<!-- ════════════════════════════════════════════════════════════════════════
+     THREE.JS  +  USD-WASM VIEWPORT
+     ════════════════════════════════════════════════════════════════════ -->
 <script type="module">
-import * as THREE from 'three';
+import * as THREE       from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
 
+// USD WASM: side-effect import registers globalThis["NEEDLE:USD:GET"]
+import '/usd/bindings/emHdBindings.js';
+
+// Hydra → Three.js render delegate
+import { ThreeRenderDelegateInterface }
+  from '/usd/hydra/ThreeJsRenderDelegate.js';
+
+// ── Viewport container ────────────────────────────────────────────────────
 const vpWrap = document.getElementById('viewport-wrap');
 
-// ── Renderer
+// ── Three.js renderer ─────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.NeutralToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMapping      = THREE.NeutralToneMapping;
 renderer.shadowMap.enabled = false;
 renderer.setClearColor(0x111111, 1);
 vpWrap.appendChild(renderer.domElement);
 
-// ── Scene
+// ── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-const sceneRoot = new THREE.Group();
-sceneRoot.name = 'USD Root';
-scene.add(sceneRoot);
 
-// Grid
+const usdRoot = new THREE.Group();
+usdRoot.name  = "USD Root";
+scene.add(usdRoot);
+
 scene.add(new THREE.GridHelper(20, 20, 0x444444, 0x333333));
 
-// Lights (basic 3-point for preview)
-const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
-keyLight.position.set(5, 8, 4);
-scene.add(keyLight);
-scene.add(new THREE.DirectionalLight(0x8888cc, 0.4).position.set(-3, 4, -2));
-scene.add(new THREE.AmbientLight(0x404040, 0.6));
-
-// ── Camera + controls
+// ── Camera + controls ─────────────────────────────────────────────────────
 const camera = new THREE.PerspectiveCamera(27, 1, 0.01, 100000);
 camera.position.set(7, 7, 7);
+
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+controls.enableDamping      = true;
+controls.dampingFactor      = 0.08;
 controls.screenSpacePanning = true;
 
-// ── Resize
-function resize() {
+// ── Resize ────────────────────────────────────────────────────────────────
+function resizeViewport() {
   const w = vpWrap.clientWidth, h = vpWrap.clientHeight;
-  if (w === 0 || h === 0) return;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
-new ResizeObserver(resize).observe(vpWrap);
-resize();
+new ResizeObserver(resizeViewport).observe(vpWrap);
+resizeViewport();
 
-// ── Frame all
-window.frameAll = function() {
-  const box = new THREE.Box3().setFromObject(sceneRoot);
+// ── Frame all ─────────────────────────────────────────────────────────────
+window.frameAll = function () {
+  const box    = new THREE.Box3().setFromObject(usdRoot);
   if (box.isEmpty()) return;
-  const size = box.getSize(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   if (isNaN(size.x)) return;
   const maxSize = Math.max(size.x, size.y, size.z);
-  const dist = maxSize * 1.8;
+  const dist    = maxSize * 1.8;
   controls.target.copy(center);
   camera.position.copy(center).add(new THREE.Vector3(dist, dist * 0.6, dist));
   camera.near = dist / 1000; camera.far = dist * 100;
@@ -210,221 +405,414 @@ window.frameAll = function() {
   controls.maxDistance = dist * 10;
   controls.update();
 };
-document.addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') window.frameAll(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') window.frameAll();
+});
 
-// ── GLB loader
-const loader = new GLTFLoader();
-let _framedOnce = false;
+// ── USD state ─────────────────────────────────────────────────────────────
+let _driver      = null;
+let _usdReady    = false;
+let _endTimeCode = 1;
+let _timeout     = 40;          // ms per time-code (1000 / timecodes-per-sec)
+let _framedOnce  = false;
 
-// ── Prim path → mesh map for click-to-select
-const _pathToMesh = new Map();
+// Virtual FS path inside the WASM runtime – must end in .usda so SDF
+// can determine the file format without an HTTP round-trip.
+const STAGE_VPATH = '/scene.usda';
 
+// ── Initialise USD WASM module ────────────────────────────────────────────
+const getUsdModule = globalThis["NEEDLE:USD:GET"];
+let USD = null;
+
+setVpMsg("Loading USD WASM…\n(~17 MB on first visit, cached after that)");
+try {
+  USD = await getUsdModule({
+    mainScriptUrlOrBlob: "/usd/bindings/emHdBindings.js",
+    locateFile: (file) => "/usd/bindings/" + file,
+    onDownloadProgress: (downloaded, total) => {
+      const pct = total > 0 ? Math.round(downloaded / total * 100) : 0;
+      document.getElementById('progress-fill').style.width = pct + '%';
+      setVpMsg(`Loading USD WASM… ${pct}%`);
+    },
+  });
+  setVpMsg("WASM loaded. Fetching stage…");
+} catch (err) {
+  setVpMsg("❌ WASM failed to load:\n" + err.message, true);
+  console.error("USD WASM load error:", err);
+}
+
+// ── Load / reload the USD stage ───────────────────────────────────────────
+// Strategy (mirrors usd-viewer drag-and-drop handler):
+//   1. fetch fresh USDA from server (no-store → always latest)
+//   2. write bytes into the WASM virtual FS at STAGE_VPATH
+//   3. open STAGE_VPATH with HdWebSyncDriver
+// Passing a local virtual path (not an HTTP URL) means USD's SDF layer
+// format detection just looks at the ".usda" extension – no query strings,
+// no network layer inside WASM, no format-detection failure.
 async function loadStage() {
-  setVpMsg('Loading scene from server…');
-  sceneRoot.clear();
-  _pathToMesh.clear();
+  if (!USD) { setVpMsg("USD WASM not available", true); return; }
 
+  _usdReady = false;
+  setVpMsg("Fetching stage…");
+
+  // Tear down previous driver
+  if (_driver) {
+    try { _driver.delete(); } catch (_) {}
+    _driver = null;
+  }
+  usdRoot.clear();
+
+  // Remove previous virtual file so createDataFile doesn't throw EEXIST
+  try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
+
+  // ── Step 1: fetch USDA ────────────────────────────────────────────────
+  let usda;
   try {
-    const r = await fetch('/api/stage/export.glb', { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const buf = await r.arrayBuffer();
-
-    loader.parse(buf, '', (gltf) => {
-      sceneRoot.add(gltf.scene);
-
-      // Index prim paths from extras
-      gltf.scene.traverse(obj => {
-        if (obj.userData?.primPath) {
-          _pathToMesh.set(obj.userData.primPath, obj);
-        }
-      });
-
-      hideVpMsg();
-      if (!_framedOnce) { _framedOnce = true; window.frameAll(); }
-      setStatus('Stage loaded — ' + _pathToMesh.size + ' prims');
-    }, (err) => {
-      setVpMsg('❌ glTF parse error: ' + err.message, true);
-    });
+    const r = await fetch('/api/stage/export.usda', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+    usda = await r.text();
   } catch (err) {
-    setVpMsg('❌ Failed to load: ' + err.message, true);
+    setVpMsg("❌ Failed to fetch stage:\n" + err.message, true);
+    return;
+  }
+
+  // ── Step 2: write into WASM virtual FS ───────────────────────────────
+  try {
+    const bytes = new TextEncoder().encode(usda);
+    USD.FS_createDataFile('/', 'scene.usda', bytes, true, true, true);
+  } catch (err) {
+    setVpMsg("❌ WASM FS write failed:\n" + err.message, true);
+    console.error("FS_createDataFile error:", err);
+    return;
+  }
+
+  // ── Step 3: open with HdWebSyncDriver ────────────────────────────────
+  const delegateConfig = { usdRoot, paths: [], driver: () => _driver };
+  try {
+    const renderInterface = new ThreeRenderDelegateInterface(delegateConfig);
+    let drv = new USD.HdWebSyncDriver(renderInterface, STAGE_VPATH);
+    if (drv instanceof Promise) drv = await drv;
+    _driver = drv;
+    _driver.Draw();
+
+    let stage = _driver.GetStage();
+    if (stage instanceof Promise) stage = await stage;
+
+    // Coordinate system: Z-up USD → Y-up Three.js
+    usdRoot.rotation.x =
+      String.fromCharCode(stage.GetUpAxis?.() ?? 89) === 'z'   // 'Y'=89
+        ? -Math.PI / 2 : 0;
+
+    if (stage.GetEndTimeCode)        _endTimeCode = stage.GetEndTimeCode();
+    if (stage.GetTimeCodesPerSecond) _timeout     = 1000 / stage.GetTimeCodesPerSecond();
+
+    _usdReady = true;
+    hideVpMsg();
+
+    if (!_framedOnce) { _framedOnce = true; window.frameAll(); }
+
+    setStatus("Stage loaded.");
+    if (typeof refreshPrims === 'function') refreshPrims();
+  } catch (err) {
+    setVpMsg("❌ Stage load error:\n" + err.message, true);
+    console.error("loadStage error:", err);
   }
 }
 
-window.reloadStage = loadStage;
+window.reloadStage     = loadStage;
+window.refreshViewport = loadStage;
 
-// ── Click-to-select in viewport
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-renderer.domElement.addEventListener('click', (e) => {
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-  mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObject(sceneRoot, true);
-  if (hits.length > 0) {
-    let obj = hits[0].object;
-    while (obj && !obj.userData?.primPath) obj = obj.parent;
-    if (obj?.userData?.primPath) {
-      window.selectPrimByPath(obj.userData.primPath);
-    }
-  }
-});
+// ── Animation / render loop ───────────────────────────────────────────────
+let _animTime  = 0;
+let _prevTime  = performance.now();
+let _frameCount = 0;
+let _lastFpsTs  = performance.now();
 
-// ── Render loop
-let _fc = 0, _lastFps = performance.now();
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
-  renderer.render(scene, camera);
-  _fc++;
+
   const now = performance.now();
-  if (now - _lastFps >= 1000) {
+  const dt  = (now - _prevTime) * 0.001;
+  _prevTime = now;
+
+  if (_driver && _usdReady) {
+    _animTime += dt;
+    const tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
+    _driver.SetTime(tc);
+    _driver.Draw();
+  }
+
+  renderer.render(scene, camera);
+
+  _frameCount++;
+  if (now - _lastFpsTs >= 1000) {
     document.getElementById('vp-stats').textContent =
-      `${_fc} fps  |  ${renderer.info.render.triangles.toLocaleString()} tris`;
-    _fc = 0; _lastFps = now; renderer.info.reset();
+      `${_frameCount} fps  |  ${renderer.info.render.triangles.toLocaleString()} tris`;
+    _frameCount = 0;
+    _lastFpsTs  = now;
+    renderer.info.reset();
   }
 }
 animate();
 
-// ── Overlay helpers
-function setVpMsg(t, err=false) {
+// ── Overlay helpers ───────────────────────────────────────────────────────
+function setVpMsg(text, isError = false) {
   const el = document.getElementById('vp-msg');
-  el.textContent = t; el.style.color = err ? 'var(--danger)' : 'var(--text2)';
+  el.textContent = text;
+  el.style.color = isError ? 'var(--danger)' : 'var(--text2)';
   document.getElementById('vp-overlay').style.display = 'flex';
 }
-function hideVpMsg() { document.getElementById('vp-overlay').style.display = 'none'; }
+function hideVpMsg() {
+  document.getElementById('vp-overlay').style.display = 'none';
+}
 
-// Kick off
-loadStage();
+// ── Kick off ──────────────────────────────────────────────────────────────
+if (USD) loadStage();
 
-window._threeScene = scene;
+// ── Expose to plain-script half of the page ───────────────────────────────
+window._threeScene    = scene;
 window._threeRenderer = renderer;
-window._threeCamera = camera;
+window._threeCamera   = camera;
 window._threeControls = controls;
-window._sceneRoot = sceneRoot;
+window._usdRoot       = usdRoot;
 </script>
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     APP LOGIC (REST / WebSocket / Outliner / Properties)
-     ═══════════════════════════════════════════════════════════════════ -->
+<!-- ════════════════════════════════════════════════════════════════════════
+     APP LOGIC  (REST / WebSocket / Outliner / Properties — plain script)
+     ════════════════════════════════════════════════════════════════════ -->
 <script>
-async function api(url, method='GET', body=null) {
+// ── REST helper ───────────────────────────────────────────────────────────
+async function api(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  try { const r = await fetch(url, opts); if (!r.ok) { setStatus('Error: '+(await r.text()),true); return {}; } return await r.json(); }
-  catch(e) { setStatus('Network: '+e.message,true); return {}; }
+  try {
+    const r = await fetch(url, opts);
+    if (!r.ok) { setStatus('Error: ' + (await r.text()), true); return {}; }
+    return await r.json();
+  } catch (e) { setStatus('Network: ' + e.message, true); return {}; }
 }
 
-// ── WebSocket
+// ── WebSocket ─────────────────────────────────────────────────────────────
 let ws = null;
 function connectWS() {
-  const proto = location.protocol==='https:'?'wss':'ws';
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => setWS('Connected',true);
-  ws.onclose = () => { setWS('Disconnected',false); setTimeout(connectWS,3000); };
-  ws.onerror = () => setWS('Error',false,true);
-  ws.onmessage = ({data}) => {
+  ws.onopen  = () => setWS('Connected', true);
+  ws.onclose = () => { setWS('Disconnected', false); setTimeout(connectWS, 3000); };
+  ws.onerror = () => setWS('Error', false, true);
+  ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
-    if (msg.event==='connected') {
-      document.getElementById('dcc-version').textContent = msg.opendcc?'OpenDCC ✓':'stub mode';
+
+    if (msg.event === 'connected') {
+      const v = msg.opendcc ? 'OpenDCC ✓' : 'stub mode';
+      document.getElementById('dcc-version').textContent = v;
+      if (!msg.usd_wasm)
+        setStatus('⚠ usd-wasm not found – clone needle-tools/usd-viewer next to OpenDCC', true);
     }
-    if (msg.event==='scene_changed') { setStatus('Scene changed – reloading…'); window.reloadStage(); refreshPrims(); }
-    if (msg.event==='stage_opened') { document.getElementById('stage-label').textContent = msg.path||'[stage]'; }
-    if (msg.event==='stage_new') { document.getElementById('stage-label').textContent = '[new]'; }
+    if (msg.event === 'scene_changed') {
+      setStatus('Stage changed – reloading…');
+      if (typeof window.reloadStage === 'function') window.reloadStage();
+      refreshPrims();
+    }
+    if (msg.event === 'stage_opened') {
+      document.getElementById('stage-label').textContent = msg.path || '[stage]';
+      setStatus('Opened: ' + msg.path);
+    }
+    if (msg.event === 'stage_new') {
+      document.getElementById('stage-label').textContent = '[new]';
+    }
+    if (msg.event === 'script_executed') {
+      setStatus(msg.ok ? 'Script OK.' : 'Script error – see output.');
+    }
   };
 }
-function setWS(l,ok,err=false) {
-  document.getElementById('ws-dot').className='ws-dot'+(ok?' ok':err?' error':'');
-  document.getElementById('ws-label').textContent=l;
+
+function setWS(label, ok, err = false) {
+  const dot = document.getElementById('ws-dot');
+  dot.className = 'ws-dot' + (ok ? ' ok' : err ? ' error' : '');
+  document.getElementById('ws-label').textContent = label;
 }
 
-// ── Stage actions
-function openStageModal() { document.getElementById('open-modal').classList.add('open'); document.getElementById('stage-path-input').focus(); }
-async function confirmOpenStage() { const p=document.getElementById('stage-path-input').value.trim(); if(!p)return; document.getElementById('open-modal').classList.remove('open'); await api('/api/stage/open','POST',{path:p}); }
-async function newStage() { await api('/api/stage/new','POST',{}); }
-async function saveStage() { await api('/api/stage/save','POST',{}); setStatus('Saved.'); }
-async function createPrim(type) { await api('/api/prims/create','POST',{type:type,parent:'/World'}); }
-async function deletePrims() { await api('/api/prims/delete','POST',{}); }
+// ── Stage actions ─────────────────────────────────────────────────────────
+function openStageModal() {
+  document.getElementById('open-modal').classList.add('open');
+  document.getElementById('stage-path-input').focus();
+}
+async function confirmOpenStage() {
+  const p = document.getElementById('stage-path-input').value.trim();
+  if (!p) return;
+  document.getElementById('open-modal').classList.remove('open');
+  await api('/api/stage/open', 'POST', { path: p });
+}
+async function newStage()  { await api('/api/stage/new',  'POST', {}); }
+async function saveStage() { await api('/api/stage/save', 'POST', {}); setStatus('Saved.'); }
 
-// ── Outliner
+window.openStageModal   = openStageModal;
+window.confirmOpenStage = confirmOpenStage;
+window.newStage         = newStage;
+window.saveStage        = saveStage;
+
+// ── Outliner ──────────────────────────────────────────────────────────────
 async function refreshPrims() {
   const d = await api('/api/prims?path=/');
   const tree = document.getElementById('prim-tree');
   tree.innerHTML = '';
-  if (!d.children?.length) { tree.innerHTML='<span style="color:var(--text2);padding:8px;display:block">Empty stage</span>'; return; }
+  if (!d.children?.length) {
+    tree.innerHTML = '<span style="color:var(--text2);padding:8px;display:block">Empty stage</span>';
+    return;
+  }
   renderPrimRows(tree, d.children, 0);
 }
+window.refreshPrims = refreshPrims;
+
 function renderPrimRows(container, children, depth) {
   children.forEach(prim => {
     const row = document.createElement('div');
-    row.className='prim-row'; row.style.setProperty('--depth',depth); row.dataset.path=prim.path;
-    const arrow = prim.children.length?'<span class="prim-toggle">▸</span>':'<span class="prim-toggle">&nbsp;</span>';
-    row.innerHTML = arrow+`<span>${primIcon(prim.type)}&nbsp;${prim.name}</span><span class="prim-type">&nbsp;${prim.type||''}</span>`;
-    row.addEventListener('click', async(ev) => {
+    row.className  = 'prim-row';
+    row.style.setProperty('--depth', depth);
+    row.dataset.path = prim.path;
+
+    const arrow = prim.children.length
+      ? '<span class="prim-toggle">▸</span>'
+      : '<span class="prim-toggle">&nbsp;</span>';
+
+    row.innerHTML = arrow
+      + `<span>${primIcon(prim.type)}&nbsp;${prim.name}</span>`
+      + `<span class="prim-type">&nbsp;${prim.type || ''}</span>`;
+
+    row.addEventListener('click', async (ev) => {
       ev.stopPropagation();
-      document.querySelectorAll('.prim-row.selected').forEach(r=>r.classList.remove('selected'));
+      // Select
+      document.querySelectorAll('.prim-row.selected').forEach(r => r.classList.remove('selected'));
       row.classList.add('selected');
       selectPrimByPath(prim.path);
+
+      // Lazy expand
       if (prim.children.length && !row.dataset.expanded) {
-        row.dataset.expanded='1'; row.querySelector('.prim-toggle').textContent='▾';
+        row.dataset.expanded = '1';
+        row.querySelector('.prim-toggle').textContent = '▾';
         const d2 = await api(`/api/prims?path=${encodeURIComponent(prim.path)}`);
-        if (d2.children) renderPrimRows(container, d2.children, depth+1);
+        if (d2.children) renderPrimRows(container, d2.children, depth + 1);
       }
     });
+
     container.appendChild(row);
   });
 }
-function primIcon(t){return{Mesh:'⬡',Xform:'⊕',Scope:'▢',Camera:'🎥',SphereLight:'💡',DomeLight:'💡',RectLight:'💡',Material:'🎨',Shader:'🔷',BasisCurves:'〜',Points:'·'}[t]||'◦'}
 
-// ── Properties
+function primIcon(type) {
+  const m = {
+    Mesh:'⬡', Xform:'⊕', Scope:'▢', Camera:'🎥',
+    SphereLight:'💡', DomeLight:'💡', RectLight:'💡',
+    Material:'🎨', Shader:'🔷', BasisCurves:'〜', Points:'·',
+  };
+  return m[type] || '◦';
+}
+
+// ── Properties ────────────────────────────────────────────────────────────
 async function selectPrimByPath(path) {
-  document.querySelectorAll('.prim-row').forEach(r=>r.classList.toggle('selected',r.dataset.path===path));
-  const key=path.replace(/^\//,''); if(!key)return;
-  const d = await api(`/api/prim/${key}`); if(!d.path)return;
-  document.getElementById('prim-info').innerHTML=`<b>${d.name}</b>&nbsp;<span style="color:var(--text2)">${d.type||''}</span><br/><span style="color:var(--text2);font-size:10px">${d.path}</span>`;
-  const tbody=document.getElementById('attr-body'); tbody.innerHTML='';
-  (d.attributes||[]).forEach(attr=>{
-    const tr=document.createElement('tr'),td1=document.createElement('td'),td2=document.createElement('td');
-    td1.textContent=attr.name; td2.textContent=attr.value??'—'; td2.title=attr.type;
+  document.querySelectorAll('.prim-row').forEach(r => {
+    r.classList.toggle('selected', r.dataset.path === path);
+  });
+
+  const key = path.replace(/^\//, '');
+  if (!key) return;
+  const d = await api(`/api/prim/${key}`);
+  if (!d.path) return;
+
+  document.getElementById('prim-info').innerHTML =
+    `<b>${d.name}</b>&nbsp;<span style="color:var(--text2)">${d.type || ''}</span><br/>`
+    + `<span style="color:var(--text2);font-size:10px">${d.path}</span>`;
+
+  const tbody = document.getElementById('attr-body');
+  tbody.innerHTML = '';
+  (d.attributes || []).forEach(attr => {
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td');
+    const td2 = document.createElement('td');
+    td1.textContent = attr.name;
+    td2.textContent = attr.value ?? '—';
+    td2.title       = attr.type;
     td2.classList.add('attr-editable');
-    td2.addEventListener('dblclick',()=>startAttrEdit(td2,d.path,attr));
-    tr.append(td1,td2); tbody.appendChild(tr);
+    td2.addEventListener('dblclick', () => startAttrEdit(td2, d.path, attr));
+    tr.append(td1, td2);
+    tbody.appendChild(tr);
   });
 }
-function startAttrEdit(cell,primPath,attr){
-  const orig=cell.textContent; cell.innerHTML='';
-  const inp=document.createElement('input'); inp.type='text'; inp.className='attr-input'; inp.value=orig;
-  cell.appendChild(inp); inp.focus(); inp.select();
-  const commit=async()=>{ const raw=inp.value.trim(); cell.textContent=raw; let val=raw; try{val=JSON.parse(raw)}catch(_){}
-    const res=await api(`/api/prim/${primPath.replace(/^\//,'')}`,  'PATCH',{attribute:attr.name,value:val});
-    if(!res.ok){cell.textContent=orig;setStatus('Set failed',true);}
+window.selectPrimByPath = selectPrimByPath;
+
+function startAttrEdit(cell, primPath, attr) {
+  const orig = cell.textContent;
+  cell.innerHTML = '';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.className = 'attr-input'; inp.value = orig;
+  cell.appendChild(inp);
+  inp.focus(); inp.select();
+
+  const commit = async () => {
+    const raw = inp.value.trim();
+    cell.textContent = raw;
+    let val = raw;
+    try { val = JSON.parse(raw); } catch (_) {}
+    const res = await api(`/api/prim/${primPath.replace(/^\//, '')}`, 'PATCH',
+                          { attribute: attr.name, value: val });
+    if (!res.ok) { cell.textContent = orig; setStatus('Set failed', true); }
   };
-  inp.addEventListener('blur',commit);
-  inp.addEventListener('keydown',e=>{if(e.key==='Enter')inp.blur();if(e.key==='Escape')cell.textContent=orig});
+  inp.addEventListener('blur',    commit);
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  inp.blur();
+    if (e.key === 'Escape') cell.textContent = orig;
+  });
 }
 
-// ── Script editor
-function toggleScript(){document.getElementById('script-panel').classList.toggle('open')}
-function clearScript(){document.getElementById('script-editor').value='';document.getElementById('script-output').textContent=''}
-async function runScript(){
-  const code=document.getElementById('script-editor').value;
-  const out=document.getElementById('script-output'); out.textContent='Running…';
-  const res=await api('/api/execute','POST',{code});
-  out.textContent=(res.output||'')+(res.error?'\n'+res.error:''); out.scrollTop=out.scrollHeight;
+// ── Script editor ──────────────────────────────────────────────────────────
+function toggleScript() {
+  document.getElementById('script-panel').classList.toggle('open');
 }
+function clearScript() {
+  document.getElementById('script-editor').value = '';
+  document.getElementById('script-output').textContent = '';
+}
+async function runScript() {
+  const code = document.getElementById('script-editor').value;
+  const out  = document.getElementById('script-output');
+  out.textContent = 'Running…';
+  const res = await api('/api/execute', 'POST', { code });
+  out.textContent = (res.output || '') + (res.error ? '\n' + res.error : '');
+  out.scrollTop = out.scrollHeight;
+}
+window.toggleScript = toggleScript;
+window.clearScript  = clearScript;
+window.runScript    = runScript;
 
-// ── Status
-function setStatus(msg,error=false){const el=document.getElementById('status-msg');el.textContent=msg;el.style.color=error?'var(--danger)':'var(--text2)'}
+// ── Status bar ────────────────────────────────────────────────────────────
+function setStatus(msg, error = false) {
+  const el = document.getElementById('status-msg');
+  el.textContent  = msg;
+  el.style.color  = error ? 'var(--danger)' : 'var(--text2)';
+}
+window.setStatus = setStatus;
 
-// ── Init
-(async()=>{
+// ── Init ──────────────────────────────────────────────────────────────────
+(async () => {
   connectWS();
-  const h=await api('/health');
-  if(h.opendcc) setStatus('OpenDCC backend ready.');
-  else setStatus('Running in stub mode (no OpenDCC core).');
-  const info=await api('/api/stage/info');
-  if(info.stage){document.getElementById('stage-label').textContent=info.stage.identifier||'[stage]';}
-  refreshPrims();
+
+  const h = await api('/health');
+  if (h.opendcc) {
+    setStatus('OpenDCC ready.');
+  } else if (h.usd_wasm_found === false) {
+    setStatus('⚠ usd-wasm missing – viewport will not render', true);
+  } else {
+    setStatus('Running in stub mode (no OpenDCC core).');
+  }
+
+  const info = await api('/api/stage/info');
+  if (info.stage) {
+    document.getElementById('stage-label').textContent =
+      info.stage.identifier || '[stage]';
+    refreshPrims();
+  }
 })();
 </script>
 </body>
