@@ -175,6 +175,7 @@ RUN cd /tmp && \
          --with-python --with-filesystem --with-system --with-thread \
          --with-program_options --with-regex --with-date_time \
          --with-serialization --with-iostreams --with-atomic \
+         --with-chrono --with-locale --with-log --with-wave \
          variant=release link=shared threading=multi \
          install --prefix=/opt/boost -j$(nproc) && \
     rm -rf /tmp/boost*
@@ -204,7 +205,8 @@ RUN git clone --depth 1 --branch ${OIIO_VERSION} \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/oiio \
-        -DCMAKE_PREFIX_PATH="/opt/ocio" \
+        -DCMAKE_PREFIX_PATH="/opt/ocio;/opt/boost" \
+        -DBOOST_ROOT=/opt/boost \
         -DOIIO_BUILD_TESTS=OFF \
         -DOIIO_BUILD_TOOLS=OFF \
         -DUSE_PYTHON=OFF \

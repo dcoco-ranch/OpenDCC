@@ -169,6 +169,7 @@ JAMEOF
         --with-python --with-filesystem --with-system --with-thread \
         --with-program_options --with-regex --with-date_time \
         --with-serialization --with-iostreams --with-atomic \
+        --with-chrono --with-locale --with-log --with-wave \
         variant=release link=shared threading=multi \
         install --prefix="$BOOST_PREFIX" -j"$JOBS"
     log "Boost 1.80 installed to $BOOST_PREFIX"
@@ -209,7 +210,8 @@ if [[ ! -f "$OIIO_PREFIX/lib/libOpenImageIO.so" ]] && \
     cmake -S oiio -B oiio/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$OIIO_PREFIX" \
-        -DCMAKE_PREFIX_PATH="$OCIO_PREFIX" \
+        -DCMAKE_PREFIX_PATH="$OCIO_PREFIX;$BOOST_PREFIX" \
+        -DBOOST_ROOT="$BOOST_PREFIX" \
         -DOIIO_BUILD_TESTS=OFF -DOIIO_BUILD_TOOLS=OFF \
         -DUSE_PYTHON=OFF -DUSE_QT=OFF
     ninja -C oiio/build -j"$JOBS" install
