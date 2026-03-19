@@ -365,6 +365,16 @@ scene.add(usdRoot);
 
 scene.add(new THREE.GridHelper(20, 20, 0x444444, 0x333333));
 
+// ── Default lights (fallback when USD scene has no UsdLux lights) ─────────
+const _keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
+_keyLight.position.set(5, 10, 7);
+scene.add(_keyLight);
+const _fillLight = new THREE.DirectionalLight(0x8899bb, 0.6);
+_fillLight.position.set(-4, 6, -3);
+scene.add(_fillLight);
+scene.add(new THREE.AmbientLight(0x404050, 0.5));
+scene.add(new THREE.HemisphereLight(0xb0c0d0, 0x303030, 0.4));
+
 // ── Camera + controls ─────────────────────────────────────────────────────
 const camera = new THREE.PerspectiveCamera(27, 1, 0.01, 100000);
 camera.position.set(7, 7, 7);
@@ -503,6 +513,14 @@ async function loadStage() {
 
     _usdReady = true;
     hideVpMsg();
+
+    // Fix face ordering: force double-sided on all Hydra-generated meshes
+    usdRoot.traverse(obj => {
+      if (obj.isMesh && obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+      }
+    });
 
     if (!_framedOnce) { _framedOnce = true; window.frameAll(); }
 
