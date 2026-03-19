@@ -165,7 +165,7 @@ RUN git clone --depth 1 --branch ${OCIO_VERSION} \
     rm -rf /tmp/ocio
 
 # ── OpenImageIO 2.4 ──────────────────────────────────────────────────────────
-ARG OIIO_VERSION=v2.4.17.0
+ARG OIIO_VERSION=v2.5.19.1
 RUN git clone --depth 1 --branch ${OIIO_VERSION} \
         https://github.com/AcademySoftwareFoundation/OpenImageIO.git /tmp/oiio && \
     cmake -S /tmp/oiio -B /tmp/oiio/build \
