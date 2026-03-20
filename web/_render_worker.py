@@ -233,7 +233,7 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
         print(f"EGL init failed: {info.get('reason', '?')}", file=sys.stderr)
         sys.exit(1)
 
-    from pxr import Usd, UsdGeom, UsdAppUtils, Sdf
+    from pxr import Usd, UsdGeom, UsdAppUtils, Sdf, UsdLux
 
     stage = Usd.Stage.Open(usda_path)
     if not stage:
@@ -256,28 +256,48 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
 
     if usd_cam is None:
         # Create a default camera looking at the stage bounding box
-        from pxr import Gf, UsdGeom as UG
+        from pxr import Gf, UsdGeom as UG, UsdLux
         bbox_cache = UG.BBoxCache(tc, [UG.Tokens.default_])
         root_prim = stage.GetDefaultPrim() or stage.GetPseudoRoot()
         bbox = bbox_cache.ComputeWorldBound(root_prim)
         rng = bbox.ComputeAlignedRange()
-        center = (rng.GetMin() + rng.GetMax()) / 2.0
+        center = Gf.Vec3d((rng.GetMin() + rng.GetMax()) / 2.0)
         size = (rng.GetMax() - rng.GetMin()).GetLength()
         if size < 0.001:
             size = 10.0
 
+        # ── Camera with proper look-at transform ─────────────────────────
         cam_path = Sdf.Path("/_SnapshotCam")
         cam_prim_def = UsdGeom.Camera.Define(stage, cam_path)
-        cam_prim_def.GetFocalLengthAttr().Set(50.0)
+        cam_prim_def.GetFocalLengthAttr().Set(35.0)
+        cam_prim_def.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, size * 20))
 
-        dist = size * 2.0
+        dist = size * 1.8
         eye = Gf.Vec3d(center[0] + dist * 0.6,
-                       center[1] + dist * 0.4,
+                       center[1] + dist * 0.45,
                        center[2] + dist * 0.6)
+
+        # Compute look-at matrix: eye → center, up = +Y
+        look_at = Gf.Matrix4d()
+        look_at.SetLookAt(eye, center, Gf.Vec3d(0, 1, 0))
+        # SetLookAt returns a view matrix — we need the inverse (camera xform)
+        cam_xform = look_at.GetInverse()
+
         xf = UsdGeom.Xformable(cam_prim_def.GetPrim())
-        xf.AddTranslateOp().Set(eye)
+        xf.AddTransformOp().Set(cam_xform)
 
         usd_cam = cam_prim_def
+
+    # ── Ensure at least one light exists ──────────────────────────────────
+    has_light = False
+    for prim in stage.TraverseAll():
+        if prim.IsA(UsdLux.BoundableLightBase) if hasattr(UsdLux, 'BoundableLightBase') else prim.GetTypeName().endswith("Light"):
+            has_light = True
+            break
+    if not has_light:
+        from pxr import UsdLux as _UL
+        dome = _UL.DomeLight.Define(stage, Sdf.Path("/_SnapshotDome"))
+        dome.GetIntensityAttr().Set(1.0)
 
     try:
         recorder.Record(stage, usd_cam, tc, output_path)
