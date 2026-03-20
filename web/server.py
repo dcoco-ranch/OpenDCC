@@ -102,14 +102,43 @@ def _init_opendcc() -> None:
 
 
 def _init_default_pxr_stage() -> None:
-    """Create a default in-memory USD stage with a cube."""
+    """Create a default in-memory USD stage with an explicit mesh cube.
+
+    We use UsdGeomMesh (not UsdGeomCube) because the WASM Hydra render
+    delegate (needle-tools) does not reliably tessellate implicit geometric
+    prims like Cube/Sphere/Cylinder.  An explicit mesh with points and
+    faceVertexIndices is guaranteed to render in all backends.
+    """
     global _pxr_stage
-    from pxr import Usd, UsdGeom, Gf, Vt
+    from pxr import Usd, UsdGeom, Gf, Vt, Sdf
+
     _pxr_stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageUpAxis(_pxr_stage, UsdGeom.Tokens.y)
-    world = _pxr_stage.DefinePrim("/World", "Xform")
-    cube_prim = _pxr_stage.DefinePrim("/World/Cube", "Cube")
-    _pxr_stage.SetDefaultPrim(world)
+
+    world = UsdGeom.Xform.Define(_pxr_stage, Sdf.Path("/World"))
+    _pxr_stage.SetDefaultPrim(world.GetPrim())
+
+    # -- Explicit cube mesh (8 vertices, 6 quad faces, CCW winding) ---------
+    mesh = UsdGeom.Mesh.Define(_pxr_stage, Sdf.Path("/World/Cube"))
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray([
+        Gf.Vec3f(-1, -1, -1), Gf.Vec3f( 1, -1, -1),
+        Gf.Vec3f( 1,  1, -1), Gf.Vec3f(-1,  1, -1),
+        Gf.Vec3f(-1, -1,  1), Gf.Vec3f( 1, -1,  1),
+        Gf.Vec3f( 1,  1,  1), Gf.Vec3f(-1,  1,  1),
+    ]))
+    mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray([4, 4, 4, 4, 4, 4]))
+    mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray([
+        0, 3, 2, 1,   # front  (-Z)
+        4, 5, 6, 7,   # back   (+Z)
+        0, 4, 7, 3,   # left   (-X)
+        1, 2, 6, 5,   # right  (+X)
+        0, 1, 5, 4,   # bottom (-Y)
+        2, 3, 7, 6,   # top    (+Y)
+    ]))
+    mesh.GetExtentAttr().Set(Vt.Vec3fArray([
+        Gf.Vec3f(-1, -1, -1), Gf.Vec3f(1, 1, 1),
+    ]))
+    mesh.GetSubdivisionSchemeAttr().Set("none")
 
 
 # ── Init at module load (works with both `python server.py` and `uvicorn server:app`)
@@ -620,8 +649,8 @@ async def stage_export_usda():
 )
 async def stage_export_glb():
     """Export the current stage as binary glTF (.glb) for Three.js."""
-    # Try full USD → glTF conversion first
-    stage = _current_stage() if _opendcc_available else None
+    # Try full USD → glTF conversion first (works with opendcc.core OR pxr)
+    stage = _current_stage()
 
     if stage:
         try:
