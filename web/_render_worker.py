@@ -373,8 +373,9 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
             break
     if not has_light:
         from pxr import UsdLux as _UL
+        # Subtle dome light — avoids washing out the scene
         dome = _UL.DomeLight.Define(stage, Sdf.Path("/_SnapshotDome"))
-        dome.GetIntensityAttr().Set(1.0)
+        dome.GetIntensityAttr().Set(0.35)
 
     try:
         recorder.Record(stage, usd_cam, tc, output_path)
