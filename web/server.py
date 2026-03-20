@@ -583,10 +583,9 @@ async def stage_export_usda():
     stage = _current_stage()
     if stage:
         try:
-            # Flatten all references/sublayers into a single USDA
-            # so the WASM client gets everything in one file
-            from pxr import UsdUtils
-            flat_layer = UsdUtils.FlattenLayerStack(stage)
+            # stage.Flatten() resolves ALL composition arcs:
+            # references, payloads, sublayers, variants → single layer
+            flat_layer = stage.Flatten()
             usda = flat_layer.ExportToString()
             return Response(
                 content=usda,
@@ -594,7 +593,7 @@ async def stage_export_usda():
                 headers={"Cache-Control": "no-store"},
             )
         except Exception as exc:
-            logger.warning("Flatten failed, exporting root layer: %s", exc)
+            logger.warning("Flatten failed: %s", exc)
             try:
                 usda = stage.GetRootLayer().ExportToString()
                 return Response(
