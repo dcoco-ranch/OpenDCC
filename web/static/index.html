@@ -139,11 +139,48 @@
       padding: 2px 6px;
       padding-left: calc(6px + var(--depth,0) * 12px);
       cursor: pointer; white-space: nowrap;
+      user-select: none;
     }
     .prim-row:hover    { background: rgba(90,143,194,.2); }
     .prim-row.selected { background: rgba(90,143,194,.4); }
-    .prim-toggle { font-size: 9px; color: var(--text2); width: 12px; }
-    .prim-type   { color: var(--text2); font-size: 10px; }
+    .prim-row.drag-over { border-top: 2px solid var(--accent); }
+    .prim-row.inactive { opacity: 0.4; }
+    .prim-row .vis-btn { opacity: 0.3; cursor: pointer; font-size: 10px; margin-left: auto; }
+    .prim-row .vis-btn:hover { opacity: 1; }
+    .prim-row .vis-btn.hidden { color: var(--danger); opacity: 0.7; }
+    .prim-toggle { font-size: 9px; color: var(--text2); width: 12px; flex-shrink: 0; }
+    .prim-icon   { font-size: 11px; flex-shrink: 0; }
+    .prim-name   { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .prim-type   { color: var(--text2); font-size: 10px; flex-shrink: 0; }
+
+    /* Search bar */
+    #prim-search {
+      width: 100%; padding: 3px 6px; margin: 0;
+      background: var(--bg); border: none; border-bottom: 1px solid var(--border);
+      color: var(--text); font: 11px system-ui; outline: none;
+    }
+    #prim-search:focus { border-bottom-color: var(--accent); }
+    #prim-search::placeholder { color: #666; }
+
+    /* Context menu */
+    .ctx-menu {
+      position: fixed; z-index: 100;
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 4px 0;
+      min-width: 160px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+      font-size: 11px;
+    }
+    .ctx-menu .ctx-item {
+      padding: 4px 14px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    }
+    .ctx-menu .ctx-item:hover { background: rgba(90,143,194,.3); }
+    .ctx-menu .ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
+    .ctx-menu .ctx-sub { position: relative; }
+    .ctx-menu .ctx-sub > .ctx-menu {
+      display: none; position: absolute; left: 100%; top: -4px;
+    }
+    .ctx-menu .ctx-sub:hover > .ctx-menu { display: block; }
+    .ctx-item .shortcut { margin-left: auto; color: #666; font-size: 10px; }
 
     /* Properties */
     #attr-table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -158,6 +195,52 @@
       width: 100%; background: #222; border: 1px solid var(--accent);
       color: var(--text); font: 11px monospace; padding: 1px 4px;
     }
+    /* Collapsible attribute sections */
+    .attr-section {
+      border-bottom: 1px solid var(--border); margin-bottom: 2px;
+    }
+    .attr-section-header {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 8px; cursor: pointer; user-select: none;
+      font-size: 11px; font-weight: 600; color: var(--text);
+      background: rgba(255,255,255,.03);
+    }
+    .attr-section-header:hover { background: rgba(255,255,255,.06); }
+    .attr-section-header .toggle { font-size: 9px; color: var(--text2); }
+    .attr-section-body { display: block; }
+    .attr-section-body.collapsed { display: none; }
+    /* Color swatch */
+    .color-swatch {
+      display: inline-block; width: 14px; height: 14px;
+      border: 1px solid #555; border-radius: 2px; vertical-align: middle;
+      cursor: pointer; margin-right: 4px;
+    }
+    /* Slider */
+    .attr-slider {
+      width: 100%; height: 4px; -webkit-appearance: none; appearance: none;
+      background: #444; border-radius: 2px; outline: none;
+    }
+    .attr-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 10px; height: 10px;
+      background: var(--accent); border-radius: 50%; cursor: pointer;
+    }
+
+    /* Create menu dropdown */
+    .create-dropdown {
+      position: relative; display: inline-block;
+    }
+    .create-dropdown-content {
+      display: none; position: absolute; top: 100%; left: 0;
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 4px 0;
+      min-width: 180px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+      z-index: 50; font-size: 11px;
+    }
+    .create-dropdown:hover .create-dropdown-content,
+    .create-dropdown.open .create-dropdown-content { display: block; }
+    .create-dropdown-content .ctx-item { padding: 4px 14px; cursor: pointer; }
+    .create-dropdown-content .ctx-item:hover { background: rgba(90,143,194,.3); }
+    .create-dropdown-content .ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
 
     /* Script overlay */
     #script-panel {
@@ -244,9 +327,31 @@
 
   <!-- ── Toolbar ────────────────────────────────────────────────────────── -->
   <div id="toolbar">
-    <label>Stage:</label>
+    <div class="create-dropdown" id="create-dropdown">
+      <button onclick="this.parentElement.classList.toggle('open')">＋ Create</button>
+      <div class="create-dropdown-content" id="create-menu">
+        <div class="ctx-item" onclick="createPrim('Cube')">⬡ Cube</div>
+        <div class="ctx-item" onclick="createPrim('Sphere')">● Sphere</div>
+        <div class="ctx-item" onclick="createPrim('Cylinder')">◎ Cylinder</div>
+        <div class="ctx-item" onclick="createPrim('Cone')">▲ Cone</div>
+        <div class="ctx-item" onclick="createPrim('Plane')">▭ Plane</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item" onclick="createPrim('Xform')">⊕ Xform</div>
+        <div class="ctx-item" onclick="createPrim('Scope')">▢ Scope</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item" onclick="createPrim('Camera')">🎥 Camera</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item" onclick="createPrim('DistantLight')">☀ Distant Light</div>
+        <div class="ctx-item" onclick="createPrim('RectLight')">▬ Rect Light</div>
+        <div class="ctx-item" onclick="createPrim('SphereLight')">💡 Sphere Light</div>
+        <div class="ctx-item" onclick="createPrim('DomeLight')">🌐 Dome Light</div>
+      </div>
+    </div>
+    <label style="margin-left:8px">Stage:</label>
     <span id="stage-label" style="color:var(--text2);font-size:11px;margin-left:4px">—</span>
     <span style="flex:1"></span>
+    <button onclick="cmdUndo()" title="Undo (Ctrl+Z)">↶</button>
+    <button onclick="cmdRedo()" title="Redo (Ctrl+Shift+Z)">↷</button>
     <button onclick="frameAll() || (_pendingFrame=true)" title="Frame all (F)">⊡ Frame</button>
     <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
     <button id="btn-snapshot" onclick="takeSnapshot()" title="Server-side GPU render (PNG)" style="display:none">📷 Snapshot</button>
@@ -258,6 +363,7 @@
       Outliner
       <button style="padding:1px 6px;font-size:10px" onclick="refreshPrims()">↻</button>
     </div>
+    <input type="text" id="prim-search" placeholder="🔍 Search prims..." oninput="filterPrims(this.value)" />
     <div class="scroll">
       <div id="prim-tree">
         <span style="color:var(--text2);padding:8px;display:block">No stage loaded</span>
@@ -760,132 +866,300 @@ window.confirmOpenStage = confirmOpenStage;
 window.newStage         = newStage;
 window.saveStage        = saveStage;
 
+// ── Selection state ───────────────────────────────────────────────────────
+var _selectedPaths = [];
+
 // ── Outliner ──────────────────────────────────────────────────────────────
 async function refreshPrims() {
-  const d = await api('/api/prims?path=/');
-  const tree = document.getElementById('prim-tree');
+  var d = await api('/api/prims?path=/');
+  var tree = document.getElementById('prim-tree');
   tree.innerHTML = '';
-  if (!d.children?.length) {
+  if (!d.children || !d.children.length) {
     tree.innerHTML = '<span style="color:var(--text2);padding:8px;display:block">Empty stage</span>';
     return;
   }
-  renderPrimRows(tree, d.children, 0);
-
-  // Auto-expand first level (e.g. /World → show its children)
-  for (const prim of d.children) {
-    if (prim.children.length) {
-      const row = tree.querySelector(`[data-path="${prim.path}"]`);
-      if (row && !row.dataset.expanded) {
-        row.dataset.expanded = '1';
-        const toggle = row.querySelector('.prim-toggle');
-        if (toggle) toggle.textContent = '▾';
-        const d2 = await api(`/api/prims?path=${encodeURIComponent(prim.path)}`);
-        if (d2.children) renderPrimRows(tree, d2.children, 1);
-      }
-    }
-  }
+  await renderPrimRows(tree, d.children, 0, true);
 }
 window.refreshPrims = refreshPrims;
 
-function renderPrimRows(container, children, depth) {
-  children.forEach(prim => {
-    const row = document.createElement('div');
-    row.className  = 'prim-row';
-    row.style.setProperty('--depth', depth);
-    row.dataset.path = prim.path;
-
-    const arrow = prim.children.length
-      ? '<span class="prim-toggle">▸</span>'
-      : '<span class="prim-toggle">&nbsp;</span>';
-
-    row.innerHTML = arrow
-      + `<span>${primIcon(prim.type)}&nbsp;${prim.name}</span>`
-      + `<span class="prim-type">&nbsp;${prim.type || ''}</span>`;
-
-    row.addEventListener('click', async (ev) => {
-      ev.stopPropagation();
-      // Select
-      document.querySelectorAll('.prim-row.selected').forEach(r => r.classList.remove('selected'));
-      row.classList.add('selected');
-      selectPrimByPath(prim.path);
-
-      // Lazy expand
-      if (prim.children.length && !row.dataset.expanded) {
-        row.dataset.expanded = '1';
-        row.querySelector('.prim-toggle').textContent = '▾';
-        const d2 = await api(`/api/prims?path=${encodeURIComponent(prim.path)}`);
-        if (d2.children) renderPrimRows(container, d2.children, depth + 1);
-      }
-    });
-
+async function renderPrimRows(container, children, depth, autoExpand) {
+  for (var i = 0; i < children.length; i++) {
+    var prim = children[i];
+    var row = buildPrimRow(prim, depth);
     container.appendChild(row);
-  });
+    if (autoExpand && depth === 0 && prim.children && prim.children.length > 0) {
+      row.dataset.expanded = '1';
+      var toggle = row.querySelector('.prim-toggle');
+      if (toggle) toggle.textContent = '\u25be';
+      var d2 = await api('/api/prims?path=' + encodeURIComponent(prim.path));
+      if (d2.children) await renderPrimRows(container, d2.children, depth + 1, false);
+    }
+  }
+}
+
+function buildPrimRow(prim, depth) {
+  var row = document.createElement('div');
+  row.className = 'prim-row' + (prim.active === false ? ' inactive' : '');
+  row.style.setProperty('--depth', depth);
+  row.dataset.path = prim.path;
+  row.dataset.name = (prim.name || '').toLowerCase();
+  row.dataset.type = prim.type || '';
+  row.draggable = true;
+  var hasKids = prim.children && prim.children.length > 0;
+  var arrow = hasKids ? '<span class="prim-toggle">\u25b8</span>' : '<span class="prim-toggle">&nbsp;</span>';
+  var vis = (prim.visibility === 'invisible') ? 'hidden' : '';
+  row.innerHTML = arrow
+    + '<span class="prim-icon">' + primIcon(prim.type) + '</span>'
+    + '<span class="prim-name">' + prim.name + '</span>'
+    + '<span class="prim-type">' + (prim.type || '') + '</span>'
+    + '<span class="vis-btn ' + vis + '" title="Toggle visibility">\ud83d\udc41</span>';
+  (function(p, r) {
+    r.addEventListener('click', function(ev) { ev.stopPropagation(); handlePrimClick(p, r, ev); });
+    r.addEventListener('contextmenu', function(ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      if (_selectedPaths.indexOf(p.path) === -1) handlePrimClick(p, r, {});
+      showContextMenu(ev.clientX, ev.clientY, p.path);
+    });
+    r.addEventListener('dragstart', function(ev) { ev.dataTransfer.setData('text/plain', p.path); });
+    r.addEventListener('dragover', function(ev) { ev.preventDefault(); r.classList.add('drag-over'); });
+    r.addEventListener('dragleave', function() { r.classList.remove('drag-over'); });
+    r.addEventListener('drop', function(ev) {
+      ev.preventDefault(); r.classList.remove('drag-over');
+      var src = ev.dataTransfer.getData('text/plain');
+      if (src && src !== p.path) reparentPrim(src, p.path);
+    });
+    var vb = r.querySelector('.vis-btn');
+    if (vb) vb.addEventListener('click', function(ev) {
+      ev.stopPropagation(); toggleVisibility(p.path, this.classList.contains('hidden'));
+    });
+  })(prim, row);
+  return row;
+}
+
+function handlePrimClick(prim, row, ev) {
+  if (ev.ctrlKey || ev.metaKey) {
+    var idx = _selectedPaths.indexOf(prim.path);
+    if (idx >= 0) { _selectedPaths.splice(idx, 1); row.classList.remove('selected'); }
+    else { _selectedPaths.push(prim.path); row.classList.add('selected'); }
+  } else if (ev.shiftKey && _selectedPaths.length > 0) {
+    var rows = Array.from(document.querySelectorAll('.prim-row'));
+    var lastIdx = rows.findIndex(function(r) { return r.dataset.path === _selectedPaths[_selectedPaths.length - 1]; });
+    var curIdx = rows.indexOf(row);
+    if (lastIdx >= 0 && curIdx >= 0) {
+      var s = Math.min(lastIdx, curIdx), e = Math.max(lastIdx, curIdx);
+      for (var i = s; i <= e; i++) {
+        if (_selectedPaths.indexOf(rows[i].dataset.path) === -1) _selectedPaths.push(rows[i].dataset.path);
+        rows[i].classList.add('selected');
+      }
+    }
+  } else {
+    document.querySelectorAll('.prim-row.selected').forEach(function(r) { r.classList.remove('selected'); });
+    _selectedPaths = [prim.path];
+    row.classList.add('selected');
+  }
+  if (prim.children && prim.children.length && !row.dataset.expanded) {
+    row.dataset.expanded = '1';
+    var tgl = row.querySelector('.prim-toggle'); if (tgl) tgl.textContent = '\u25be';
+    var cont = row.parentElement, ns = row.nextSibling;
+    var dd = parseInt(row.style.getPropertyValue('--depth') || '0') + 1;
+    api('/api/prims?path=' + encodeURIComponent(prim.path)).then(function(d2) {
+      if (d2.children) { var f = document.createDocumentFragment();
+        d2.children.forEach(function(c) { f.appendChild(buildPrimRow(c, dd)); });
+        cont.insertBefore(f, ns); }
+    });
+  }
+  if (_selectedPaths.length > 0) selectPrimByPath(_selectedPaths[_selectedPaths.length - 1]);
+  api('/api/selection', 'POST', { paths: _selectedPaths, replace: true });
 }
 
 function primIcon(type) {
-  const m = {
-    Mesh:'⬡', Xform:'⊕', Scope:'▢', Camera:'🎥',
-    SphereLight:'💡', DomeLight:'💡', RectLight:'💡',
-    Material:'🎨', Shader:'🔷', BasisCurves:'〜', Points:'·',
-  };
-  return m[type] || '◦';
+  var m = { Mesh:'\u2b21', Cube:'\u2b21', Sphere:'\u25cf', Cylinder:'\u25ce', Cone:'\u25b2',
+    Xform:'\u2295', Scope:'\u25a2', Camera:'\ud83c\udfa5',
+    SphereLight:'\ud83d\udca1', DomeLight:'\ud83c\udf10', RectLight:'\u25ac', DistantLight:'\u2600',
+    Material:'\ud83c\udfa8', Shader:'\ud83d\udd37', BasisCurves:'\u301c', Points:'\u00b7' };
+  return m[type] || '\u25e6';
 }
 
-// ── Properties ────────────────────────────────────────────────────────────
-async function selectPrimByPath(path) {
-  document.querySelectorAll('.prim-row').forEach(r => {
-    r.classList.toggle('selected', r.dataset.path === path);
+function filterPrims(query) {
+  var q = (query || '').toLowerCase();
+  document.querySelectorAll('.prim-row').forEach(function(row) {
+    if (!q) { row.style.display = ''; return; }
+    var name = row.dataset.name || '', type = (row.dataset.type || '').toLowerCase();
+    row.style.display = (name.indexOf(q) >= 0 || type.indexOf(q) >= 0) ? '' : 'none';
   });
+}
+window.filterPrims = filterPrims;
 
-  const key = path.replace(/^\//, '');
+// ── Context menu ──────────────────────────────────────────────────────────
+function showContextMenu(x, y, path) {
+  closeContextMenu();
+  var menu = document.createElement('div');
+  menu.className = 'ctx-menu'; menu.id = 'ctx-menu-active';
+  menu.style.left = x + 'px'; menu.style.top = y + 'px';
+  var items = [
+    { label: '\u2295 Create Cube', action: function() { createPrim('Cube', path); } },
+    { label: '\u25cf Create Sphere', action: function() { createPrim('Sphere', path); } },
+    { label: '\u2295 Create Xform', action: function() { createPrim('Xform', path); } },
+    null,
+    { label: '\ud83d\udccb Duplicate', sc: 'Ctrl+D', action: function() { duplicateSelected(); } },
+    { label: '\ud83d\udcc1 Group', sc: 'Ctrl+G', action: function() { groupSelected(); } },
+    { label: '\u270f Rename', sc: 'F2', action: function() { renameSelected(); } },
+    null,
+    { label: '\ud83d\udc41 Toggle Visibility', sc: 'H', action: function() { toggleVisibilitySelected(); } },
+    null,
+    { label: '\ud83d\uddd1 Delete', sc: 'Del', action: function() { deleteSelected(); } },
+  ];
+  items.forEach(function(item) {
+    if (!item) { var s = document.createElement('div'); s.className = 'ctx-sep'; menu.appendChild(s); return; }
+    var el = document.createElement('div'); el.className = 'ctx-item';
+    el.innerHTML = item.label + (item.sc ? '<span class="shortcut">' + item.sc + '</span>' : '');
+    el.addEventListener('click', function() { closeContextMenu(); item.action(); });
+    menu.appendChild(el);
+  });
+  document.body.appendChild(menu);
+  setTimeout(function() { document.addEventListener('click', closeContextMenu, { once: true }); }, 10);
+}
+function closeContextMenu() { var m = document.getElementById('ctx-menu-active'); if (m) m.remove();
+  var dd = document.getElementById('create-dropdown'); if (dd) dd.classList.remove('open'); }
+
+// ── DCC commands ──────────────────────────────────────────────────────────
+async function createPrim(type, parent) { closeContextMenu();
+  await api('/api/prims/create', 'POST', { type: type, parent: parent || '/World' }); setStatus('Created ' + type); }
+window.createPrim = createPrim;
+async function deleteSelected() { if (!_selectedPaths.length) return;
+  await api('/api/prims/delete', 'POST', { paths: _selectedPaths }); _selectedPaths = []; }
+async function duplicateSelected() { if (!_selectedPaths.length) return;
+  await api('/api/prims/duplicate', 'POST', { paths: _selectedPaths }); }
+async function groupSelected() { if (!_selectedPaths.length) return;
+  await api('/api/prims/group', 'POST', { paths: _selectedPaths }); }
+async function renameSelected() { if (!_selectedPaths.length) return;
+  var path = _selectedPaths[_selectedPaths.length - 1], old = path.split('/').pop();
+  var n = prompt('Rename prim:', old); if (n && n !== old) await api('/api/prims/rename', 'POST', { path: path, new_name: n }); }
+async function toggleVisibility(path, vis) { await api('/api/prims/visibility', 'POST', { paths: [path], visible: vis }); }
+async function toggleVisibilitySelected() { if (!_selectedPaths.length) return;
+  await api('/api/prims/visibility', 'POST', { paths: _selectedPaths, visible: true }); }
+async function reparentPrim(child, parent) { await api('/api/prims/parent', 'POST', { paths: [child], parent_path: parent }); setStatus('Reparented'); }
+async function cmdUndo() { await api('/api/undo', 'POST'); }
+async function cmdRedo() { await api('/api/redo', 'POST'); }
+window.cmdUndo = cmdUndo; window.cmdRedo = cmdRedo;
+
+document.addEventListener('keydown', function(ev) {
+  if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA') return;
+  if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSelected(); ev.preventDefault(); }
+  if (ev.key === 'd' && (ev.ctrlKey || ev.metaKey)) { duplicateSelected(); ev.preventDefault(); }
+  if (ev.key === 'g' && (ev.ctrlKey || ev.metaKey)) { groupSelected(); ev.preventDefault(); }
+  if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey) { cmdUndo(); ev.preventDefault(); }
+  if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) { cmdRedo(); ev.preventDefault(); }
+  if (ev.key === 'h' || ev.key === 'H') { toggleVisibilitySelected(); }
+  if (ev.key === 'F2') { renameSelected(); }
+});
+
+// ── Properties (categorized) ──────────────────────────────────────────────
+function categorizeAttr(name) {
+  if (/xform|translate|rotate|scale/.test(name)) return 'Transform';
+  if (/visibility|purpose|active/.test(name)) return 'Display';
+  if (/points|normals|faceVertex|extent|subdivision|primvar/.test(name)) return 'Geometry';
+  if (/diffuse|roughness|metallic|opacity|emissive|specular/.test(name)) return 'Material';
+  if (/intensity|color|radius|angle|width|height/.test(name) && /inputs:/.test(name)) return 'Light';
+  return 'Other';
+}
+
+function renderAttrWidget(attr, primPath) {
+  var val = (attr.value != null) ? String(attr.value) : '\u2014';
+  var type = attr.type || '';
+  // Color swatch for color attrs
+  if (/[Cc]olor/.test(attr.name) && /Vec3|float3|color3/.test(type)) {
+    try {
+      var nums = val.replace(/[^0-9.,\-\s]/g, '').split(/[,\s]+/).map(Number);
+      if (nums.length >= 3) {
+        var r = Math.round(nums[0] * 255), g = Math.round(nums[1] * 255), b = Math.round(nums[2] * 255);
+        return '<span class="color-swatch" style="background:rgb(' + r + ',' + g + ',' + b + ')"></span>' + val;
+      }
+    } catch(e) {}
+  }
+  // Slider for 0-1 float attrs
+  if (/roughness|metallic|opacity/.test(attr.name) && /float|double/.test(type)) {
+    try {
+      var fval = parseFloat(val);
+      if (!isNaN(fval) && fval >= 0 && fval <= 1) {
+        return '<input type="range" class="attr-slider" min="0" max="1" step="0.01" value="' + fval + '" '
+          + 'oninput="this.nextSibling.textContent=this.value" '
+          + 'onchange="setAttr(\'' + primPath + '\',\'' + attr.name + '\',parseFloat(this.value))">'
+          + '<span>' + fval.toFixed(2) + '</span>';
+      }
+    } catch(e) {}
+  }
+  return '<span class="attr-editable" ondblclick="startAttrEdit(this,\'' + primPath + '\',\'' + attr.name + '\',\'' + type + '\')">' + val + '</span>';
+}
+
+async function selectPrimByPath(path) {
+  document.querySelectorAll('.prim-row').forEach(function(r) {
+    r.classList.toggle('selected', _selectedPaths.indexOf(r.dataset.path) >= 0);
+  });
+  var key = path.replace(/^\//, '');
   if (!key) return;
-  const d = await api(`/api/prim/${key}`);
+  var d = await api('/api/prim/' + key);
   if (!d.path) return;
-
   document.getElementById('prim-info').innerHTML =
-    `<b>${d.name}</b>&nbsp;<span style="color:var(--text2)">${d.type || ''}</span><br/>`
-    + `<span style="color:var(--text2);font-size:10px">${d.path}</span>`;
-
-  const tbody = document.getElementById('attr-body');
-  tbody.innerHTML = '';
-  (d.attributes || []).forEach(attr => {
-    const tr = document.createElement('tr');
-    const td1 = document.createElement('td');
-    const td2 = document.createElement('td');
-    td1.textContent = attr.name;
-    td2.textContent = attr.value ?? '—';
-    td2.title       = attr.type;
-    td2.classList.add('attr-editable');
-    td2.addEventListener('dblclick', () => startAttrEdit(td2, d.path, attr));
-    tr.append(td1, td2);
-    tbody.appendChild(tr);
+    '<b>' + d.name + '</b>&nbsp;<span style="color:var(--text2)">' + (d.type || '') + '</span><br/>'
+    + '<span style="color:var(--text2);font-size:10px">' + d.path + '</span>';
+  var categories = {};
+  (d.attributes || []).forEach(function(attr) {
+    var cat = categorizeAttr(attr.name);
+    if (!categories[cat]) categories[cat] = [];
+    categories[cat].push(attr);
+  });
+  var propsScroll = document.getElementById('props-scroll');
+  propsScroll.querySelectorAll('.attr-section').forEach(function(s) { s.remove(); });
+  var attrTable = document.getElementById('attr-table');
+  document.getElementById('attr-body').innerHTML = '';
+  ['Transform','Display','Geometry','Material','Light','Other'].forEach(function(catName) {
+    var catAttrs = categories[catName];
+    if (!catAttrs || !catAttrs.length) return;
+    var sec = document.createElement('div'); sec.className = 'attr-section';
+    var hdr = document.createElement('div'); hdr.className = 'attr-section-header';
+    hdr.innerHTML = '<span class="toggle">\u25be</span> ' + catName + ' <span style="color:var(--text2);font-size:10px;margin-left:auto">' + catAttrs.length + '</span>';
+    hdr.addEventListener('click', function() { var b = sec.querySelector('.attr-section-body');
+      b.classList.toggle('collapsed'); hdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '\u25b8' : '\u25be'; });
+    var body = document.createElement('div'); body.className = 'attr-section-body';
+    var tbl = document.createElement('table'); tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
+    catAttrs.forEach(function(attr) {
+      var tr = document.createElement('tr');
+      var td1 = document.createElement('td'); td1.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a;color:var(--text2);width:38%';
+      var td2 = document.createElement('td'); td2.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a';
+      td1.textContent = attr.name; td2.innerHTML = renderAttrWidget(attr, d.path); td2.title = attr.type;
+      tr.append(td1, td2); tbl.appendChild(tr);
+    });
+    body.appendChild(tbl); sec.appendChild(hdr); sec.appendChild(body);
+    propsScroll.insertBefore(sec, attrTable);
   });
 }
 window.selectPrimByPath = selectPrimByPath;
 
-function startAttrEdit(cell, primPath, attr) {
-  const orig = cell.textContent;
-  cell.innerHTML = '';
-  const inp = document.createElement('input');
-  inp.type = 'text'; inp.className = 'attr-input'; inp.value = orig;
-  cell.appendChild(inp);
-  inp.focus(); inp.select();
+async function setAttr(primPath, attrName, value) {
+  await api('/api/prim/' + primPath.replace(/^\//, ''), 'PATCH', { attribute: attrName, value: value });
+}
+window.setAttr = setAttr;
 
-  const commit = async () => {
-    const raw = inp.value.trim();
-    cell.textContent = raw;
-    let val = raw;
-    try { val = JSON.parse(raw); } catch (_) {}
-    const res = await api(`/api/prim/${primPath.replace(/^\//, '')}`, 'PATCH',
-                          { attribute: attr.name, value: val });
+function startAttrEdit(cell, primPath, attrName, attrType) {
+  var orig = cell.textContent;
+  cell.innerHTML = '';
+  var inp = document.createElement('input');
+  inp.type = 'text'; inp.className = 'attr-input'; inp.value = orig;
+  cell.appendChild(inp); inp.focus(); inp.select();
+  var commit = async function() {
+    var raw = inp.value.trim(); cell.textContent = raw;
+    var val = raw; try { val = JSON.parse(raw); } catch(_) {}
+    var res = await api('/api/prim/' + primPath.replace(/^\//, ''), 'PATCH', { attribute: attrName, value: val });
     if (!res.ok) { cell.textContent = orig; setStatus('Set failed', true); }
   };
-  inp.addEventListener('blur',    commit);
-  inp.addEventListener('keydown', e => {
-    if (e.key === 'Enter')  inp.blur();
+  inp.addEventListener('blur', commit);
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') inp.blur();
     if (e.key === 'Escape') cell.textContent = orig;
   });
 }
+window.startAttrEdit = startAttrEdit;
 
 // ── Script editor ──────────────────────────────────────────────────────────
 function toggleScript() {
