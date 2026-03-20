@@ -249,6 +249,7 @@
     <span style="flex:1"></span>
     <button onclick="frameAll() || (_pendingFrame=true)" title="Frame all (F)">⊡ Frame</button>
     <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
+    <button id="btn-snapshot" onclick="takeSnapshot()" title="Server-side GPU render (PNG)" style="display:none">📷 Snapshot</button>
   </div>
 
   <!-- ── Outliner ───────────────────────────────────────────────────────── -->
@@ -461,6 +462,7 @@ let _usdReady    = false;
 let _endTimeCode = 1;
 let _timeout     = 40;          // ms per time-code (1000 / timecodes-per-sec)
 let _pendingFrame = false;      // set true → animate loop will frameAll after next Draw()
+let _loading      = false;      // prevents concurrent loadStage calls
 
 // Virtual FS path inside the WASM runtime – must end in .usda so SDF
 // can determine the file format without an HTTP round-trip.
@@ -497,6 +499,8 @@ try {
 // no network layer inside WASM, no format-detection failure.
 async function loadStage(reframe = true) {
   if (!USD) { setVpMsg("USD WASM not available", true); return; }
+  if (_loading) { console.log('[loadStage] skipped — already loading'); return; }
+  _loading = true;
 
   _usdReady = false;
   _pendingFrame = reframe;
@@ -509,8 +513,10 @@ async function loadStage(reframe = true) {
   }
   usdRoot.clear();
 
-  // Remove previous virtual file so createDataFile doesn't throw EEXIST
+  // Remove previous virtual file — try multiple cleanup approaches
+  // for robustness (Emscripten FS can be finicky with open file handles)
   try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
+  try { USD.FS_unlink('/scene.usda'); } catch (_) {}
 
   // ── Step 1: fetch USDA ────────────────────────────────────────────────
   let usda;
@@ -520,17 +526,28 @@ async function loadStage(reframe = true) {
     usda = await r.text();
   } catch (err) {
     setVpMsg("❌ Failed to fetch stage:\n" + err.message, true);
+    _loading = false;
     return;
   }
 
   // ── Step 2: write into WASM virtual FS ───────────────────────────────
   try {
     const bytes = new TextEncoder().encode(usda);
+    // Try unlink again right before create (race window minimization)
+    try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
     USD.FS_createDataFile('/', 'scene.usda', bytes, true, true, true);
   } catch (err) {
-    setVpMsg("❌ WASM FS write failed:\n" + err.message, true);
-    console.error("FS_createDataFile error:", err);
-    return;
+    // If file still exists, try overwriting via FS.writeFile
+    try {
+      const bytes = new TextEncoder().encode(usda);
+      USD.FS_writeFile(STAGE_VPATH, bytes);
+      console.log('[loadStage] FS_writeFile fallback succeeded');
+    } catch (err2) {
+      console.error("FS write error (both methods):", err, err2);
+      setVpMsg("❌ WASM FS write failed — try reloading the page", true);
+      _loading = false;
+      return;
+    }
   }
 
   // ── Step 3: open with HdWebSyncDriver ────────────────────────────────
@@ -567,10 +584,12 @@ async function loadStage(reframe = true) {
     if (!_pendingFrame && reframe) _pendingFrame = true;
 
     setStatus("Stage loaded.");
+    _loading = false;
     if (typeof refreshPrims === 'function') refreshPrims();
   } catch (err) {
     setVpMsg("❌ Stage load error:\n" + err.message, true);
     console.error("loadStage error:", err);
+    _loading = false;
   }
 }
 
@@ -876,6 +895,31 @@ function setStatus(msg, error = false) {
 }
 window.setStatus = setStatus;
 
+// ── Snapshot (server-side GPU render) ──────────────────────────────────────
+async function takeSnapshot() {
+  setStatus('Rendering snapshot on server GPU…');
+  try {
+    const r = await fetch('/api/render/snapshot?width=1920&height=1080', { cache: 'no-store' });
+    if (r.status === 501) {
+      setStatus('GPU rendering not available — using client WASM viewport', true);
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    // Open in new tab or download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `opendcc_snapshot_${Date.now()}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus('Snapshot saved.');
+  } catch (e) {
+    setStatus('Snapshot failed: ' + e.message, true);
+  }
+}
+window.takeSnapshot = takeSnapshot;
+
 // ── Init ──────────────────────────────────────────────────────────────────
 (async () => {
   connectWS();
@@ -888,6 +932,17 @@ window.setStatus = setStatus;
   } else {
     setStatus('Running in stub mode (no OpenDCC core).');
   }
+
+  // Show Snapshot button if server has GPU
+  if (h.gpu && h.gpu.gpu_available) {
+    document.getElementById('btn-snapshot').style.display = '';
+    setStatus(`GPU: ${h.gpu.gpu_name} — server-side rendering available`);
+  }
+
+  // Show render mode in status bar
+  const renderMode = h.gpu?.render_mode || 'client_wasm';
+  document.getElementById('vp-stats').title =
+    renderMode === 'server_gpu' ? 'Render: Server GPU + Client WASM' : 'Render: Client WASM only';
 
   const info = await api('/api/stage/info');
   if (info.stage) {
