@@ -261,16 +261,35 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
     if usd_cam is None and viewport_camera:
         from pxr import Gf
         try:
-            eye_vals    = viewport_camera["eye"]
-            target_vals = viewport_camera["target"]
+            eye_vals    = list(viewport_camera["eye"])
+            target_vals = list(viewport_camera["target"])
             vfov_deg    = viewport_camera.get("fov", 27)
             aspect      = viewport_camera.get("aspect", width / height)
             near_clip   = viewport_camera.get("near", 0.01)
             far_clip    = viewport_camera.get("far", 100000)
 
+            # Three.js applies rotation.x = -π/2 to USD root when stage is
+            # Z-up (to convert Z-up → Y-up for Three.js).  The camera
+            # coordinates from Three.js are therefore in the ROTATED space.
+            # We must undo that rotation before placing the USD camera.
+            #
+            # Inverse of Rx(-90°) is Rx(+90°):
+            #   (x, y, z) → (x, -z, y)
+            up_axis = str(UsdGeom.GetStageUpAxis(stage)).upper()
+            if up_axis == "Z":
+                # Undo the -90°X that Three.js applied:  Rx(+90°)
+                # (x, y, z) → (x, -z, y)
+                ex, ey, ez = eye_vals
+                eye_vals    = [ex, -ez, ey]
+                tx, ty, tz = target_vals
+                target_vals = [tx, -tz, ty]
+                up = Gf.Vec3d(0, 0, 1)  # Z-up in USD stage
+                print(f"Z-up stage: rotated camera coords back", file=sys.stderr)
+            else:
+                up = Gf.Vec3d(0, 1, 0)  # Y-up
+
             eye    = Gf.Vec3d(*eye_vals)
             target = Gf.Vec3d(*target_vals)
-            up     = Gf.Vec3d(0, 1, 0)
 
             # Three.js PerspectiveCamera.fov is VERTICAL fov in degrees.
             # USD Camera uses horizontalAperture + focalLength.
@@ -319,18 +338,27 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
         if size < 0.001:
             size = 10.0
 
+        up_axis = str(UsdGeom.GetStageUpAxis(stage)).upper()
+
         cam_path_s = Sdf.Path("/_SnapshotCam")
         cam_def = UsdGeom.Camera.Define(stage, cam_path_s)
         cam_def.GetFocalLengthAttr().Set(35.0)
         cam_def.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, size * 20))
 
         dist = size * 1.8
-        eye = Gf.Vec3d(center[0] + dist * 0.6,
-                       center[1] + dist * 0.45,
-                       center[2] + dist * 0.6)
+        if up_axis == "Z":
+            eye = Gf.Vec3d(center[0] + dist * 0.6,
+                           center[1] - dist * 0.6,
+                           center[2] + dist * 0.45)
+            up = Gf.Vec3d(0, 0, 1)
+        else:
+            eye = Gf.Vec3d(center[0] + dist * 0.6,
+                           center[1] + dist * 0.45,
+                           center[2] + dist * 0.6)
+            up = Gf.Vec3d(0, 1, 0)
 
         look_at = Gf.Matrix4d()
-        look_at.SetLookAt(eye, center, Gf.Vec3d(0, 1, 0))
+        look_at.SetLookAt(eye, center, up)
 
         xf = UsdGeom.Xformable(cam_def.GetPrim())
         xf.AddTransformOp().Set(look_at.GetInverse())
