@@ -14,52 +14,49 @@
 | Outliner / Properties / Script Editor | ✅ Basiques, REST + WebSocket |
 | Export USDA/GLB (server-side) | ✅ `usd_to_gltf.py` + `Flatten()` |
 | Docker Rocky 9 (full VFX build) | ✅ `Dockerfile.rocky9` + `rocky9-web` |
-| Docker rocky9-gpu (nvidia) | ⚠️ Défini dans compose, non testé |
+| Docker rocky9-gpu (nvidia) | ✅ Dockerfile + entrypoint + GPU detection |
 | 34 packages C++/Qt (plugins OpenDCC) | ✅ Code source, mais **aucun exposé côté web** |
 
 ---
 
-## Phase 1 — Infrastructure GPU & Docker Hardening
-**Tag : `milestone/v1.0-gpu-infra`**
+## Phase 1 — Infrastructure GPU & Docker Hardening ✅
+**Tag : `milestone/v1.0-gpu-infra`** — Validé
 
-### 1.1 — NVIDIA Container Toolkit
-- [ ] Documenter les prérequis host : `nvidia-driver`, `nvidia-container-toolkit`
-- [ ] Créer `docker/Dockerfile.rocky9.gpu` (hérite de `runtime`, ajoute CUDA runtime + EGL nvidia)
-- [ ] Ajouter un script `scripts/setup_nvidia_docker.sh` (détecte driver, installe toolkit, teste `nvidia-smi`)
-- [ ] Tester `docker compose up rocky9-gpu` avec vérification `nvidia-smi` dans le container
-- [ ] Ajouter un endpoint `/health` enrichi : `gpu: true/false`, `gpu_name`, `vram`
-
-### 1.2 — Hydra Storm headless GPU (server-side render)
-- [ ] Activer `hdStorm` avec EGL dans le container GPU
-- [ ] Ajouter endpoint `/api/render/snapshot` → rendu server-side Hydra → PNG (pour preview rapide)
-- [ ] Fallback automatique : si pas de GPU → rendu WASM côté client (déjà en place)
-
-### 1.3 — CI / Smoke tests
-- [ ] Script `scripts/test_docker.sh` : build + up + curl `/health` + vérif `/api/stage/export.usda`
-- [ ] Ajouter `docker compose --profile test` pour run automatique
+- ✅ `scripts/setup_nvidia_docker.sh` : setup NVIDIA Container Toolkit
+- ✅ `docker/Dockerfile.rocky9.gpu` : image GPU (EGL + entrypoint)
+- ✅ `docker/gpu-entrypoint.sh` : GPU auto-detect → `/tmp/gpu-info.json`
+- ✅ `/health` enrichi avec infos GPU (nom, VRAM, driver, render_mode)
+- ✅ `web/render_snapshot.py` + `/api/render/snapshot` + `/api/render/status`
+- ✅ `scripts/test_docker.sh` : smoke tests CI
+- ✅ `GPU_DOCKER_SETUP.md`
+- ⚠️ Bouton Snapshot : visibilité Firefox macOS non résolue (accès direct URL OK)
 
 ---
 
-## Phase 2 — Outliner & Scene Graph Web avancé
-**Tag : `milestone/v2.0-scene-graph`**
+## Phase 2 — Outliner & Scene Graph Web avancé — 🔧 CODE PRÊT, EN ATTENTE DE VALIDATION
+**Tag : `milestone/v2.0-scene-graph`** — À poser après validation
 
 ### 2.1 — Outliner enrichi (remplace `opendcc.hydra_op.ui.scene_graph`)
-- [ ] Drag & drop pour reparenting (appel `/api/prims/parent`)
-- [ ] Menu contextuel (clic droit) : Create, Delete, Duplicate, Group, Rename, Visibility
-- [ ] Icônes typées par prim type (Mesh, Xform, Camera, Light, Material…)
-- [ ] Recherche / filtre de prims en temps réel
-- [ ] Multi-sélection (Ctrl+click, Shift+click)
-- [ ] Indicateur visuel actif/inactif, visible/invisible
+- [x] Drag & drop pour reparenting (appel `/api/prims/parent`)
+- [x] Menu contextuel (clic droit) : Create, Delete, Duplicate, Group, Rename, Visibility
+- [x] Icônes typées par prim type (Mesh, Xform, Camera, Light, Material…)
+- [x] Recherche / filtre de prims en temps réel
+- [x] Multi-sélection (Ctrl+click, Shift+click)
+- [x] Indicateur visuel actif/inactif, visible/invisible
 
 ### 2.2 — Properties Panel avancé
-- [ ] Édition inline de tous les types USD (Vec3, Color, Matrix, float, int, bool, token, string)
-- [ ] Widgets adaptés : color picker pour `diffuseColor`, slider pour `roughness`, etc.
-- [ ] Section pliable par catégorie (Xform, Geometry, Material, Custom)
-- [ ] Affichage des relations (material binding, references)
+- [x] Édition inline de tous les types USD (Vec3, Color, Matrix, float, int, bool, token, string)
+- [x] Widgets adaptés : color picker pour `diffuseColor`, slider pour `roughness`, etc.
+- [x] Section pliable par catégorie (Xform, Geometry, Material, Custom)
+- [ ] Affichage des relations (material binding, references) — déféré Phase 4
 
 ### 2.3 — Create Menu (remplace `opendcc.usd_editor.common_cmds`)
-- [ ] Toolbar "Create" : tous les types de prims (Mesh primitives, Lights, Camera, Xform, Scope)
-- [ ] API endpoint `/api/prims/create` étendu pour supporter les paramètres initiaux
+- [x] Toolbar "Create" : tous les types de prims (Mesh primitives, Lights, Camera, Xform, Scope)
+- [x] Undo/Redo boutons + raccourcis clavier (Ctrl+Z, Ctrl+Shift+Z, Delete, Ctrl+D, Ctrl+G, H, F2)
+- [ ] API endpoint `/api/prims/create` étendu pour supporter les paramètres initiaux — déféré
+
+> **Status** : Code committed (b6ffe69). En attente de validation sur VM.
+> Docker rebuild requis avec `--no-cache` pour forcer le refresh des fichiers web/.
 
 ---
 
