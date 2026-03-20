@@ -4,7 +4,7 @@ egl_headless.py
 Headless EGL context setup for NVIDIA GPU rendering without X11.
 
 Uses EGL_EXT_platform_device to find the NVIDIA GPU and create an
-OpenGL 4.5 Core Profile context with a PBuffer surface — required
+OpenGL 4.5+ Compatibility Profile context with a PBuffer surface — required
 by USD's HgiGL / Hydra Storm before any rendering call.
 
 Call ``ensure_egl_context()`` once at process startup (before importing
@@ -142,11 +142,15 @@ def ensure_egl_context(width: int = 4096, height: int = 4096) -> bool:
         log.warning("eglCreatePbufferSurface failed")
         return False
 
-    # ── OpenGL 4.5 Core Profile context ───────────────────────────────────
+    # ── OpenGL 4.5+ Compatibility Profile context ──────────────────────────
+    # IMPORTANT: USD's HgiGL uses legacy GL state queries (GL_POLYGON_SMOOTH
+    # etc.) that trigger invalid-enum in core profile → draw failures.
+    # Compatibility profile provides GL 4.6 on NVIDIA and avoids all this.
+    EGL_CONTEXT_OPENGL_COMPAT_BIT = 0x00000002
     ctx_attribs = (EGLint * 7)(
         EGL_CONTEXT_MAJOR_VERSION, 4,
         EGL_CONTEXT_MINOR_VERSION, 5,
-        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_COMPAT_BIT,
         EGL_NONE,
     )
     egl.eglCreateContext.restype  = ctypes.c_void_p

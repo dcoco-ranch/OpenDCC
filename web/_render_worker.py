@@ -116,8 +116,10 @@ def _init_egl():
                                              ctypes.c_void_p]
     surface = egl.eglCreatePbufferSurface(ctypes.c_void_p(display), config, pbuf)
 
-    # GL 4.5 Core
-    ctx_attr = (EGLint * 7)(0x3098, 4, 0x30FB, 5, 0x30FD, 0x01, EGL_NONE)
+    # GL 4.5+ Compatibility profile (NOT core — USD HgiGL uses legacy
+    # GL state queries like GL_POLYGON_SMOOTH that are invalid in core)
+    EGL_CONTEXT_OPENGL_COMPAT_BIT = 0x00000002
+    ctx_attr = (EGLint * 7)(0x3098, 4, 0x30FB, 5, 0x30FD, EGL_CONTEXT_OPENGL_COMPAT_BIT, EGL_NONE)
     egl.eglCreateContext.restype  = ctypes.c_void_p
     egl.eglCreateContext.argtypes = [ctypes.c_void_p, EGLConfig,
                                       ctypes.c_void_p, ctypes.c_void_p]
