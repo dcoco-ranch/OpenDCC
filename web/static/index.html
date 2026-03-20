@@ -924,9 +924,18 @@ window.takeSnapshot = takeSnapshot;
 (async () => {
   connectWS();
 
-  const h = await api('/health');
+  let h = {};
+  try {
+    h = await api('/health');
+    console.log('[init] /health:', JSON.stringify(h));
+  } catch (e) {
+    console.error('[init] /health failed:', e);
+  }
+
   if (h.opendcc) {
     setStatus('OpenDCC ready.');
+  } else if (h.pxr) {
+    setStatus('USD Python backend ready.');
   } else if (h.usd_wasm_found === false) {
     setStatus('⚠ usd-wasm missing – viewport will not render', true);
   } else {
@@ -934,21 +943,38 @@ window.takeSnapshot = takeSnapshot;
   }
 
   // Show Snapshot button if server has GPU
-  if (h.gpu && h.gpu.gpu_available) {
-    document.getElementById('btn-snapshot').style.display = '';
-    setStatus(`GPU: ${h.gpu.gpu_name} — server-side rendering available`);
+  try {
+    const gpuAvailable = h.gpu && h.gpu.gpu_available === true;
+    console.log('[init] GPU available:', gpuAvailable, h.gpu);
+    if (gpuAvailable) {
+      const btn = document.getElementById('btn-snapshot');
+      if (btn) {
+        btn.style.display = '';
+        console.log('[init] Snapshot button shown');
+      }
+      setStatus('GPU: ' + (h.gpu.gpu_name || 'detected') + ' — server-side rendering available');
+    }
+  } catch (e) {
+    console.error('[init] GPU check error:', e);
   }
 
   // Show render mode in status bar
-  const renderMode = h.gpu?.render_mode || 'client_wasm';
-  document.getElementById('vp-stats').title =
-    renderMode === 'server_gpu' ? 'Render: Server GPU + Client WASM' : 'Render: Client WASM only';
+  const renderMode = (h.gpu && h.gpu.render_mode) || 'client_wasm';
+  const statsEl = document.getElementById('vp-stats');
+  if (statsEl) {
+    statsEl.title = renderMode === 'server_gpu'
+      ? 'Render: Server GPU + Client WASM' : 'Render: Client WASM only';
+  }
 
-  const info = await api('/api/stage/info');
-  if (info.stage) {
-    document.getElementById('stage-label').textContent =
-      info.stage.identifier || '[stage]';
-    refreshPrims();
+  try {
+    const info = await api('/api/stage/info');
+    if (info.stage) {
+      document.getElementById('stage-label').textContent =
+        info.stage.identifier || '[stage]';
+      refreshPrims();
+    }
+  } catch (e) {
+    console.error('[init] stage/info failed:', e);
   }
 })();
 </script>
