@@ -610,14 +610,25 @@ async function loadStage(reframe = true) {
 
   _usdReady = false;
   _pendingFrame = reframe;
-  setVpMsg("Fetching stage…");
+
+  // Save camera state before reload (for incremental updates)
+  const savedCamPos    = camera.position.clone();
+  const savedCamTarget = controls.target.clone();
+  const savedCamFov    = camera.fov;
+  const savedCamNear   = camera.near;
+  const savedCamFar    = camera.far;
+
+  // Don't show overlay for incremental reloads (scene_changed)
+  if (reframe) setVpMsg("Fetching stage…");
 
   // Tear down previous driver
   if (_driver) {
     try { _driver.delete(); } catch (_) {}
     _driver = null;
   }
-  usdRoot.clear();
+  // For incremental reloads, keep the old scene visible until the new one is ready
+  // Only clear for full reloads (reframe=true) to avoid flash
+  if (reframe) usdRoot.clear();
 
   // Remove previous virtual file — try multiple cleanup approaches
   // for robustness (Emscripten FS can be finicky with open file handles)
@@ -657,6 +668,8 @@ async function loadStage(reframe = true) {
   }
 
   // ── Step 3: open with HdWebSyncDriver ────────────────────────────────
+  // Clear old scene graph right before rebuilding (minimizes blank frame)
+  usdRoot.clear();
   const delegateConfig = { usdRoot, paths: [], driver: () => _driver };
   try {
     const renderInterface = new ThreeRenderDelegateInterface(delegateConfig);
@@ -686,6 +699,17 @@ async function loadStage(reframe = true) {
         mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
       }
     });
+
+    // Restore camera for incremental updates (no reframe)
+    if (!reframe) {
+      camera.position.copy(savedCamPos);
+      controls.target.copy(savedCamTarget);
+      camera.fov  = savedCamFov;
+      camera.near = savedCamNear;
+      camera.far  = savedCamFar;
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
 
     if (!_pendingFrame && reframe) _pendingFrame = true;
 
