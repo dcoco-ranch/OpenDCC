@@ -57,6 +57,15 @@ if [[ "${1:-}" == "--all" ]]; then
     docker compose build
 elif [[ $# -gt 0 ]]; then
     log "Building: $*"
+    # GPU image depends on rocky9 base image
+    for svc in "$@"; do
+        if [[ "$svc" == "rocky9-gpu" ]]; then
+            if ! docker image inspect opendcc:rocky9 &>/dev/null; then
+                log "rocky9-gpu depends on opendcc:rocky9 — building rocky9 first..."
+                docker compose build rocky9
+            fi
+        fi
+    done
     docker compose build "$@"
 else
     log "Building rocky9-web (default)..."

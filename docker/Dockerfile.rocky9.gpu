@@ -1,0 +1,71 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.rocky9.gpu  —  OpenDCC with NVIDIA GPU support
+#
+# Extends the full rocky9 runtime image with:
+#   - CUDA runtime libraries (for Hydra Storm GPU rendering)
+#   - EGL support for headless GPU rendering (no X11 needed)
+#   - GPU detection at startup with automatic fallback
+#
+# Prerequisites on the HOST:
+#   - NVIDIA driver ≥ 525
+#   - nvidia-container-toolkit installed
+#   - Run: sudo bash scripts/setup_nvidia_docker.sh
+#
+# Build:  docker compose build rocky9-gpu
+#         (requires opendcc:rocky9 to be built first)
+#
+# Run:    docker compose up rocky9-gpu
+# URL:    http://localhost:8081
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FROM opendcc:rocky9
+
+LABEL maintainer="OpenDCC" \
+      description="OpenDCC Web + GPU (Hydra Storm headless)" \
+      gpu="nvidia"
+
+# ── NVIDIA runtime env (nvidia-container-toolkit injects driver libs) ─────────
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+
+# ── Install EGL/Vulkan/CUDA runtime (minimal — driver comes from host) ────────
+RUN dnf install -y epel-release && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y --allowerasing \
+        # EGL for headless GPU rendering (Hydra Storm)
+        mesa-libEGL \
+        mesa-libEGL-devel \
+        mesa-libgbm \
+        libglvnd-egl \
+        libglvnd-opengl \
+        libglvnd-glx \
+        egl-utils \
+        # Vulkan (for future Vulkan-based render delegates)
+        vulkan-loader \
+        vulkan-headers \
+        # GL debug tools
+        mesa-dri-drivers \
+        glx-utils \
+    && dnf clean all
+
+# ── GPU entrypoint script ─────────────────────────────────────────────────────
+COPY OpenDCC/docker/gpu-entrypoint.sh /opt/opendcc/gpu-entrypoint.sh
+RUN chmod +x /opt/opendcc/gpu-entrypoint.sh
+
+# ── Environment for Hydra Storm headless GPU rendering ────────────────────────
+# Use EGL platform (no X11 display required)
+ENV __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d
+ENV MESA_GL_VERSION_OVERRIDE=4.5
+# Tell USD/Hydra to prefer EGL for headless GL context
+ENV PYOPENGL_PLATFORM=egl
+# Enable GPU info in /health endpoint
+ENV OPENDCC_GPU_ENABLED=1
+
+WORKDIR /opt/opendcc
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["/opt/opendcc/gpu-entrypoint.sh"]
+CMD ["python3", "/opt/opendcc/web/server.py", "--host", "0.0.0.0", "--port", "8080"]

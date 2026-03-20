@@ -581,6 +581,74 @@ def _coerce_value(attr, raw_value: Any):
         return raw_value
 
 
+# ── Server-side GPU rendering ─────────────────────────────────────────────────
+
+@app.get(
+    "/api/render/snapshot",
+    response_class=Response,
+    responses={200: {"content": {"image/png": {}}}},
+)
+async def render_snapshot(
+    width: int = 1280,
+    height: int = 720,
+    camera: str = "",
+    time: float = None,
+):
+    """Render the current stage via Hydra Storm (GPU) and return a PNG.
+
+    Falls back to 501 if GPU rendering is not available — the client should
+    then use WASM-based rendering (already the default in the viewport).
+    """
+    stage = _current_stage()
+    if not stage:
+        raise HTTPException(status_code=400, detail="No stage loaded")
+
+    # Clamp resolution to sane limits
+    width  = max(64, min(width, 7680))
+    height = max(64, min(height, 4320))
+
+    try:
+        from render_snapshot import render_stage_to_png
+        from pxr import Usd
+
+        tc = Usd.TimeCode(time) if time is not None else None
+        png_bytes = render_stage_to_png(stage, width, height, tc, camera)
+
+        if png_bytes is None:
+            raise HTTPException(
+                status_code=501,
+                detail="GPU rendering not available — use client-side WASM viewport",
+            )
+
+        return Response(
+            content=png_bytes,
+            media_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
+    except HTTPException:
+        raise
+    except ImportError as exc:
+        raise HTTPException(status_code=501, detail=f"Render module not available: {exc}")
+    except Exception as exc:
+        logger.warning("Snapshot render failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Render failed: {exc}")
+
+
+@app.get("/api/render/status")
+async def render_status():
+    """Check if server-side GPU rendering is available."""
+    try:
+        from render_snapshot import check_gpu_rendering_available
+        return check_gpu_rendering_available()
+    except ImportError:
+        return {
+            "frame_recorder": False,
+            "imaging_gl": False,
+            "egl": False,
+            "reason": "render_snapshot module not importable",
+        }
+
+
 # ── Page ──────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -593,12 +661,28 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {
+    result = {
         "status":         "ok",
         "opendcc":        _opendcc_available,
         "pxr":            _pxr_available,
         "usd_wasm_found": _USD_WASM_SRC.exists(),
     }
+
+    # GPU info — written by gpu-entrypoint.sh at container startup
+    gpu_info_path = Path("/tmp/gpu-info.json")
+    if gpu_info_path.exists():
+        try:
+            result["gpu"] = json.loads(gpu_info_path.read_text())
+        except Exception:
+            result["gpu"] = {"gpu_available": False, "error": "parse_failed"}
+    else:
+        # Not running in GPU container, or no entrypoint ran
+        result["gpu"] = {
+            "gpu_available": False,
+            "render_mode": os.environ.get("OPENDCC_RENDER_MODE", "client_wasm"),
+        }
+
+    return result
 
 
 # ── USD stage export ──────────────────────────────────────────────────────────

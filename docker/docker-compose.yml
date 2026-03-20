@@ -37,13 +37,20 @@ services:
       retries: 3
 
   # ── Full USD backend + GPU passthrough ──────────────────────────────────────
-  # Same as rocky9 but with NVIDIA GPU for Hydra/Storm headless rendering.
+  # Same USD pipeline as rocky9 + NVIDIA GPU for Hydra Storm headless rendering.
   # Requires: nvidia-container-toolkit on host.
+  #   Setup: sudo bash scripts/setup_nvidia_docker.sh
   #
-  # Build:  docker compose build rocky9  (reuses same image)
+  # Build:  docker compose build rocky9-gpu
+  #         (requires opendcc:rocky9 to be built first: docker compose build rocky9)
   # Start:  docker compose up rocky9-gpu
+  # URL:    http://localhost:8081
+  # Health: curl http://localhost:8081/health  (shows gpu info)
   rocky9-gpu:
-    image: opendcc:rocky9
+    build:
+      context: ../..
+      dockerfile: OpenDCC/docker/Dockerfile.rocky9.gpu
+    image: opendcc-gpu:rocky9
     container_name: opendcc-rocky9-gpu
     ports:
       - "8081:8080"
