@@ -106,9 +106,10 @@
     #viewport-wrap {
       position: relative; background: #0e0e0e; overflow: hidden;
     }
-    /* Three.js renderer appends its canvas to #viewport-wrap */
+    /* Three.js renderer appends its canvas to #viewport-wrap.
+       renderer.setSize() sets explicit inline width/height in px. */
     #viewport-wrap canvas {
-      display: block; position: absolute; inset: 0;
+      display: block;
     }
 
     /* Loading / status overlay */
@@ -386,8 +387,13 @@ controls.screenSpacePanning = true;
 
 // ── Resize ────────────────────────────────────────────────────────────────
 function resizeViewport() {
-  const w = vpWrap.clientWidth, h = vpWrap.clientHeight;
-  renderer.setSize(w, h, false);
+  const rect = vpWrap.getBoundingClientRect();
+  const w = Math.round(rect.width), h = Math.round(rect.height);
+  if (w === 0 || h === 0) return;
+  // true (default) = Three.js sets both buffer size AND canvas CSS style
+  // This ensures correct rendering on Retina displays (devicePixelRatio > 1)
+  // across all browsers (Firefox macOS had offset issues with setSize(w,h,false))
+  renderer.setSize(w, h);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
@@ -428,13 +434,20 @@ window.frameAll = function () {
   camera.position.copy(center).add(
     new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66)
   );
+  // Explicitly orient the camera before OrbitControls takes over
+  camera.lookAt(center);
   camera.near = Math.max(0.01, dist / 500);
   camera.far  = dist * 200;
   camera.updateProjectionMatrix();
   controls.maxDistance = dist * 20;
   controls.update();
   console.log('[frameAll] OK — center:', center.toArray().map(v=>v.toFixed(2)),
-              'radius:', radius.toFixed(2), 'dist:', dist.toFixed(2));
+              'radius:', radius.toFixed(2), 'dist:', dist.toFixed(2),
+              'cam:', camera.position.toArray().map(v=>v.toFixed(2)),
+              'target:', controls.target.toArray().map(v=>v.toFixed(2)),
+              'aspect:', camera.aspect.toFixed(3),
+              'canvas:', renderer.domElement.width + '×' + renderer.domElement.height,
+              'dpr:', renderer.getPixelRatio());
   return true;
 };
 
