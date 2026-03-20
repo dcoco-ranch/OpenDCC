@@ -801,11 +801,19 @@ function connectWS() {
       // Check GPU availability via /health (reliable here — WS is connected)
       fetch('/health').then(r => r.json()).then(h => {
         console.log('[ws:connected] /health:', h);
-        if (h.gpu && h.gpu.gpu_available === true) {
+        const gpu = h.gpu || {};
+        if (gpu.snapshot_available === true) {
           var btn = document.getElementById('btn-snapshot');
           if (btn) btn.style.display = '';
-          setStatus('GPU: ' + (h.gpu.gpu_name || 'detected') + ' — snapshot available');
-          console.log('[ws:connected] GPU detected, snapshot button shown');
+          setStatus('GPU: ' + (gpu.gpu_name || 'detected') + ' — snapshot available');
+          console.log('[ws:connected] GPU snapshot available');
+        } else if (gpu.gpu_available === true) {
+          // GPU hardware present but render pipeline not functional
+          console.warn('[ws:connected] GPU detected but snapshot not available:',
+                       gpu.snapshot_reason || 'no render backend');
+          setStatus('GPU detected but server-side render not available — using WASM viewport');
+        } else {
+          console.log('[ws:connected] No GPU — using WASM viewport');
         }
       }).catch(function(e) { console.warn('[ws:connected] /health check failed:', e); });
 
@@ -1195,7 +1203,10 @@ async function takeSnapshot() {
   try {
     const r = await fetch('/api/render/snapshot?width=1920&height=1080', { cache: 'no-store' });
     if (r.status === 501) {
-      setStatus('GPU rendering not available — using client WASM viewport', true);
+      const detail = await r.json().catch(() => ({}));
+      const reason = detail.detail || 'render pipeline not available';
+      setStatus('Snapshot unavailable: ' + reason, true);
+      console.warn('[snapshot] 501:', reason);
       return;
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);

@@ -682,6 +682,27 @@ async def health():
             "render_mode": os.environ.get("OPENDCC_RENDER_MODE", "client_wasm"),
         }
 
+    # ── Verify actual render pipeline (not just GPU hardware presence) ─────
+    # gpu_available only means nvidia-smi found a card.  snapshot_available
+    # is True only when at least one Hydra render backend is importable too.
+    try:
+        from render_snapshot import check_gpu_rendering_available
+        render_info = check_gpu_rendering_available()
+        result["gpu"]["render_status"] = render_info
+        has_backend = (
+            render_info.get("frame_recorder", False)
+            or render_info.get("imaging_gl", False)
+        )
+        result["gpu"]["snapshot_available"] = (
+            result["gpu"].get("gpu_available", False) and has_backend
+        )
+        if not has_backend:
+            result["gpu"]["snapshot_reason"] = render_info.get(
+                "reason", "No USD imaging module available")
+    except ImportError:
+        result["gpu"]["snapshot_available"] = False
+        result["gpu"]["snapshot_reason"] = "render_snapshot module not importable"
+
     return result
 
 
