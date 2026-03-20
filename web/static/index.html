@@ -805,6 +805,81 @@ async function api(url, method = 'GET', body = null) {
   } catch (e) { setStatus('Network: ' + e.message, true); return {}; }
 }
 
+// ── Debounced viewport reload ─────────────────────────────────────────────
+// Avoids full WASM driver rebuild on every keystroke/create/delete.
+// Outliner refreshes instantly; viewport catches up after 600ms of calm.
+let _vpReloadTimer = null;
+function _scheduleViewportReload() {
+  if (_vpReloadTimer) clearTimeout(_vpReloadTimer);
+  _vpReloadTimer = setTimeout(function() {
+    _vpReloadTimer = null;
+    if (typeof window.reloadStage === 'function') window.reloadStage(false);
+  }, 600);
+}
+
+// ── Viewport picking (click on 3D object → select prim) ──────────────────
+(function initViewportPicking() {
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  const vp = document.getElementById('viewport');
+
+  vp.addEventListener('pointerdown', function(ev) {
+    // Only left-click, ignore if dragging (OrbitControls)
+    if (ev.button !== 0) return;
+    ev._vpClickX = ev.clientX;
+    ev._vpClickY = ev.clientY;
+  });
+
+  vp.addEventListener('pointerup', function(ev) {
+    if (ev.button !== 0) return;
+    // Ignore if mouse moved (orbit/pan)
+    const dx = ev.clientX - (ev._vpClickX || ev.clientX);
+    const dy = ev.clientY - (ev._vpClickY || ev.clientY);
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) return;
+
+    const rect = vp.getBoundingClientRect();
+    mouse.x =  ((ev.clientX - rect.left) / rect.width)  * 2 - 1;
+    mouse.y = -((ev.clientY - rect.top)  / rect.height) * 2 + 1;
+
+    const cam = window._threeCamera;
+    const usdRoot = window._usdRoot;
+    if (!cam || !usdRoot) return;
+
+    raycaster.setFromCamera(mouse, cam);
+    const hits = raycaster.intersectObjects(usdRoot.children, true);
+
+    if (hits.length > 0) {
+      // Walk up to find the prim path (stored in userData by Hydra delegate)
+      let obj = hits[0].object;
+      let primPath = '';
+      while (obj && obj !== usdRoot) {
+        if (obj.userData && obj.userData.path) { primPath = obj.userData.path; break; }
+        if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
+        obj = obj.parent;
+      }
+      if (primPath) {
+        _selectedPaths = [primPath];
+        api('/api/selection', 'POST', { paths: _selectedPaths, replace: true });
+        highlightSelectedRows();
+        selectPrimByPath(primPath);
+        setStatus('Selected: ' + primPath);
+        return;
+      }
+    }
+    // Clicked empty space → deselect
+    _selectedPaths = [];
+    api('/api/selection', 'POST', { paths: [], replace: true });
+    highlightSelectedRows();
+    document.getElementById('prim-info').innerHTML = '<span style="color:var(--text2)">No selection</span>';
+  });
+})();
+
+function highlightSelectedRows() {
+  document.querySelectorAll('.prim-row').forEach(function(r) {
+    r.classList.toggle('selected', _selectedPaths.indexOf(r.dataset.path) >= 0);
+  });
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────
 let ws = null;
 function connectWS() {
@@ -851,10 +926,11 @@ function connectWS() {
       }).catch(function(e) {});
     }
     if (msg.event === 'scene_changed') {
-      setStatus('Stage changed – reloading…');
-      // Incremental edit — reload scene but don't reset camera
-      if (typeof window.reloadStage === 'function') window.reloadStage(false);
+      setStatus('Stage updated');
+      // Refresh outliner immediately (fast — just REST calls)
       refreshPrims();
+      // Debounce viewport reload (slow — full WASM driver rebuild)
+      _scheduleViewportReload();
     }
     if (msg.event === 'stage_opened') {
       document.getElementById('stage-label').textContent = msg.path || '[stage]';
@@ -1056,12 +1132,25 @@ function closeContextMenu() { var m = document.getElementById('ctx-menu-active')
 
 // ── DCC commands ──────────────────────────────────────────────────────────
 async function createPrim(type, parent) { closeContextMenu();
-  await api('/api/prims/create', 'POST', { type: type, parent: parent || '/World' }); setStatus('Created ' + type); }
+  var result = await api('/api/prims/create', 'POST', { type: type, parent: parent || '/World' });
+  setStatus('Created ' + type);
+  // Immediately refresh outliner + select the new prim (don't wait for WS)
+  await refreshPrims();
+  if (result.path) {
+    _selectedPaths = [result.path];
+    highlightSelectedRows();
+    selectPrimByPath(result.path);
+  }
+}
 window.createPrim = createPrim;
 async function deleteSelected() { if (!_selectedPaths.length) return;
-  await api('/api/prims/delete', 'POST', { paths: _selectedPaths }); _selectedPaths = []; }
+  await api('/api/prims/delete', 'POST', { paths: _selectedPaths }); _selectedPaths = [];
+  highlightSelectedRows(); await refreshPrims(); setStatus('Deleted'); }
 async function duplicateSelected() { if (!_selectedPaths.length) return;
-  await api('/api/prims/duplicate', 'POST', { paths: _selectedPaths }); }
+  var result = await api('/api/prims/duplicate', 'POST', { paths: _selectedPaths });
+  await refreshPrims();
+  if (result.new_paths) { _selectedPaths = result.new_paths; highlightSelectedRows(); }
+  setStatus('Duplicated'); }
 async function groupSelected() { if (!_selectedPaths.length) return;
   await api('/api/prims/group', 'POST', { paths: _selectedPaths }); }
 async function renameSelected() { if (!_selectedPaths.length) return;
