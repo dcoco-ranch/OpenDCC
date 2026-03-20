@@ -538,6 +538,34 @@ def _current_stage():
     return None
 
 
+def _make_explicit_mesh(stage, prim_path, shape: str) -> None:
+    """Set up explicit mesh points for Cube or Plane (no implicit prims)."""
+    from pxr import UsdGeom, Gf, Vt
+    mesh = UsdGeom.Mesh.Get(stage, prim_path)
+    if not mesh:
+        mesh = UsdGeom.Mesh.Define(stage, prim_path)
+    if shape == "Cube":
+        mesh.GetPointsAttr().Set(Vt.Vec3fArray([
+            Gf.Vec3f(-1,-1,-1), Gf.Vec3f(1,-1,-1),
+            Gf.Vec3f(1,1,-1),   Gf.Vec3f(-1,1,-1),
+            Gf.Vec3f(-1,-1,1),  Gf.Vec3f(1,-1,1),
+            Gf.Vec3f(1,1,1),    Gf.Vec3f(-1,1,1),
+        ]))
+        mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray([4]*6))
+        mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray([
+            0,3,2,1, 4,5,6,7, 0,4,7,3, 1,2,6,5, 0,1,5,4, 2,3,7,6]))
+        mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(-1,-1,-1), Gf.Vec3f(1,1,1)]))
+    elif shape == "Plane":
+        mesh.GetPointsAttr().Set(Vt.Vec3fArray([
+            Gf.Vec3f(-1,0,-1), Gf.Vec3f(1,0,-1),
+            Gf.Vec3f(1,0,1),   Gf.Vec3f(-1,0,1),
+        ]))
+        mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray([4]))
+        mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray([0,1,2,3]))
+        mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(-1,0,-1), Gf.Vec3f(1,0,1)]))
+    mesh.GetSubdivisionSchemeAttr().Set("none")
+
+
 def _prim_to_dict(prim) -> dict:
     return {
         "path":     str(prim.GetPath()),
@@ -1041,6 +1069,67 @@ class _CreatePrimReq(BaseModel):
 
 @app.post("/api/prims/create")
 async def cmd_create_prim(req: _CreatePrimReq):
+    # ── pxr mode (USD Python bindings) ────────────────────────────────────
+    if _pxr_available and not _opendcc_available:
+        stage = _current_stage()
+        if stage:
+            from pxr import Sdf, UsdGeom, UsdLux
+            parent_path = Sdf.Path(req.parent)
+            parent_prim = stage.GetPrimAtPath(parent_path)
+            if not parent_prim or not parent_prim.IsValid():
+                parent_path = Sdf.Path("/World")
+
+            # Find unique name
+            base_name = req.type
+            existing = {c.GetName() for c in stage.GetPrimAtPath(parent_path).GetChildren()} \
+                       if stage.GetPrimAtPath(parent_path).IsValid() else set()
+            name = base_name
+            i = 1
+            while name in existing:
+                name = f"{base_name}{i}"
+                i += 1
+
+            prim_path = parent_path.AppendChild(name)
+
+            # Map type → USD define
+            _TYPE_MAP = {
+                "Cube":     ("UsdGeom", "Mesh"),
+                "Sphere":   ("UsdGeom", "Sphere"),
+                "Cylinder": ("UsdGeom", "Cylinder"),
+                "Cone":     ("UsdGeom", "Cone"),
+                "Capsule":  ("UsdGeom", "Capsule"),
+                "Plane":    ("UsdGeom", "Mesh"),
+                "Xform":    ("UsdGeom", "Xform"),
+                "Scope":    ("UsdGeom", "Scope"),
+                "Camera":   ("UsdGeom", "Camera"),
+                # Lights
+                "RectLight":     ("UsdLux", "RectLight"),
+                "SphereLight":   ("UsdLux", "SphereLight"),
+                "DiskLight":     ("UsdLux", "DiskLight"),
+                "CylinderLight": ("UsdLux", "CylinderLight"),
+                "DistantLight":  ("UsdLux", "DistantLight"),
+                "DomeLight":     ("UsdLux", "DomeLight"),
+            }
+
+            entry = _TYPE_MAP.get(req.type)
+            if entry:
+                mod_name, cls_name = entry
+                mod = UsdGeom if mod_name == "UsdGeom" else UsdLux
+                cls = getattr(mod, cls_name, None)
+                if cls:
+                    prim_def = cls.Define(stage, prim_path)
+                    # Cube/Plane as explicit Mesh
+                    if req.type in ("Cube", "Plane"):
+                        _make_explicit_mesh(stage, prim_path, req.type)
+            else:
+                # Generic prim
+                stage.DefinePrim(prim_path, req.type)
+
+            path_str = str(prim_path)
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "path": path_str}
+
+    # ── Stub mode ─────────────────────────────────────────────────────────
     if not _opendcc_available:
         _stub_stage._push_undo()
         path = _stub_stage.create_prim(req.type, req.parent)
@@ -1064,6 +1153,20 @@ class _DeleteReq(BaseModel):
 
 @app.post("/api/prims/delete")
 async def cmd_delete_prims(req: _DeleteReq):
+    # ── pxr mode ──────────────────────────────────────────────────────────
+    if _pxr_available and not _opendcc_available:
+        stage = _current_stage()
+        if stage:
+            from pxr import Sdf
+            paths = req.paths or []
+            if not paths:
+                return {"ok": False, "error": "nothing selected"}
+            for p in paths:
+                stage.RemovePrim(Sdf.Path(p))
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "deleted": paths}
+
+    # ── Stub mode ─────────────────────────────────────────────────────────
     if not _opendcc_available:
         paths = req.paths or list(_stub_stage._selection)
         if not paths:
