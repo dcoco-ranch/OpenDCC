@@ -401,13 +401,24 @@ window.frameAll = function () {
   const size   = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   if (isNaN(size.x) || size.length() === 0) return false;
-  const maxSize = Math.max(size.x, size.y, size.z);
-  const dist    = maxSize * 1.8;
+
+  // Bounding sphere radius (half-diagonal of the AABB)
+  const radius = size.length() * 0.5;
+
+  // Distance that fits the bounding sphere inside the vertical FOV
+  // with a 1.6× comfort margin so the object doesn't touch the edges.
+  const vFov = camera.fov * (Math.PI / 180);
+  const dist = (radius / Math.tan(vFov / 2)) * 1.6;
+
   controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(dist, dist * 0.6, dist));
-  camera.near = dist / 1000; camera.far = dist * 100;
+  // Position: offset at 45° azimuth + 25° elevation
+  camera.position.copy(center).add(
+    new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66)
+  );
+  camera.near = Math.max(0.01, dist / 500);
+  camera.far  = dist * 200;
   camera.updateProjectionMatrix();
-  controls.maxDistance = dist * 10;
+  controls.maxDistance = dist * 20;
   controls.update();
   return true;
 };
@@ -695,6 +706,20 @@ async function refreshPrims() {
     return;
   }
   renderPrimRows(tree, d.children, 0);
+
+  // Auto-expand first level (e.g. /World → show its children)
+  for (const prim of d.children) {
+    if (prim.children.length) {
+      const row = tree.querySelector(`[data-path="${prim.path}"]`);
+      if (row && !row.dataset.expanded) {
+        row.dataset.expanded = '1';
+        const toggle = row.querySelector('.prim-toggle');
+        if (toggle) toggle.textContent = '▾';
+        const d2 = await api(`/api/prims?path=${encodeURIComponent(prim.path)}`);
+        if (d2.children) renderPrimRows(tree, d2.children, 1);
+      }
+    }
+  }
 }
 window.refreshPrims = refreshPrims;
 
