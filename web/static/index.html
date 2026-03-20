@@ -246,7 +246,7 @@
     <label>Stage:</label>
     <span id="stage-label" style="color:var(--text2);font-size:11px;margin-left:4px">—</span>
     <span style="flex:1"></span>
-    <button onclick="if(!frameAll()) _deferredFrameAll(10,150)" title="Frame all (F)">⊡ Frame</button>
+    <button onclick="frameAll() || (_pendingFrame=true)" title="Frame all (F)">⊡ Frame</button>
     <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
   </div>
 
@@ -396,8 +396,21 @@ resizeViewport();
 
 // ── Frame all ─────────────────────────────────────────────────────────────
 window.frameAll = function () {
-  const box = new THREE.Box3().setFromObject(usdRoot);
-  if (box.isEmpty()) return false;
+  // Collect bounding box ONLY from mesh objects inside usdRoot
+  // (avoids helper objects, empty groups, cameras, etc.)
+  const box = new THREE.Box3();
+  let hasMesh = false;
+  usdRoot.traverse(obj => {
+    if (obj.isMesh && obj.geometry) {
+      obj.geometry.computeBoundingBox();
+      const meshBox = obj.geometry.boundingBox.clone();
+      meshBox.applyMatrix4(obj.matrixWorld);
+      box.expandByObject(obj);
+      hasMesh = true;
+    }
+  });
+  if (!hasMesh || box.isEmpty()) return false;
+
   const size   = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   if (isNaN(size.x) || size.length() === 0) return false;
@@ -411,7 +424,7 @@ window.frameAll = function () {
   const dist = (radius / Math.tan(vFov / 2)) * 1.6;
 
   controls.target.copy(center);
-  // Position: offset at 45° azimuth + 25° elevation
+  // Position: offset at ~45° azimuth + ~30° elevation
   camera.position.copy(center).add(
     new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66)
   );
@@ -420,23 +433,13 @@ window.frameAll = function () {
   camera.updateProjectionMatrix();
   controls.maxDistance = dist * 20;
   controls.update();
+  console.log('[frameAll] OK — center:', center.toArray().map(v=>v.toFixed(2)),
+              'radius:', radius.toFixed(2), 'dist:', dist.toFixed(2));
   return true;
 };
 
-/**
- * Retry frameAll() until the bounding box is non-empty.
- * Hydra WASM populates usdRoot asynchronously — meshes may not exist
- * in the Three.js scene graph until 1-3 Draw() cycles after opening.
- */
-function _deferredFrameAll(retriesLeft = 20, intervalMs = 100) {
-  if (window.frameAll()) return;                  // success
-  if (retriesLeft <= 0) return;                   // give up
-  setTimeout(() => _deferredFrameAll(retriesLeft - 1, intervalMs), intervalMs);
-}
 document.addEventListener('keydown', e => {
-  if (e.key === 'f' || e.key === 'F') {
-    if (!window.frameAll()) _deferredFrameAll(10, 150);
-  }
+  if (e.key === 'f' || e.key === 'F') window.frameAll();
 });
 
 // ── USD state ─────────────────────────────────────────────────────────────
@@ -444,7 +447,7 @@ let _driver      = null;
 let _usdReady    = false;
 let _endTimeCode = 1;
 let _timeout     = 40;          // ms per time-code (1000 / timecodes-per-sec)
-let _framedOnce  = false;
+let _pendingFrame = false;      // set true → animate loop will frameAll after next Draw()
 
 // Virtual FS path inside the WASM runtime – must end in .usda so SDF
 // can determine the file format without an HTTP round-trip.
@@ -479,11 +482,11 @@ try {
 // Passing a local virtual path (not an HTTP URL) means USD's SDF layer
 // format detection just looks at the ".usda" extension – no query strings,
 // no network layer inside WASM, no format-detection failure.
-async function loadStage(reframe = false) {
+async function loadStage(reframe = true) {
   if (!USD) { setVpMsg("USD WASM not available", true); return; }
 
   _usdReady = false;
-  if (reframe) _framedOnce = false;
+  _pendingFrame = reframe;
   setVpMsg("Fetching stage…");
 
   // Tear down previous driver
@@ -548,7 +551,7 @@ async function loadStage(reframe = false) {
       }
     });
 
-    if (!_framedOnce) { _framedOnce = true; _deferredFrameAll(); }
+    if (!_pendingFrame && reframe) _pendingFrame = true;
 
     setStatus("Stage loaded.");
     if (typeof refreshPrims === 'function') refreshPrims();
@@ -580,6 +583,14 @@ function animate() {
     const tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
     _driver.SetTime(tc);
     _driver.Draw();
+
+    // Frame the scene AFTER Draw() populates the Three.js scene graph.
+    // Hydra WASM is async — meshes only appear in usdRoot after Draw().
+    if (_pendingFrame) {
+      if (window.frameAll()) {
+        _pendingFrame = false;
+      }
+    }
   }
 
   renderer.render(scene, camera);
@@ -651,15 +662,16 @@ function connectWS() {
     }
     if (msg.event === 'scene_changed') {
       setStatus('Stage changed – reloading…');
-      // Reframe on full stage changes (new/open), not incremental edits
-      const fullReload = msg.event === 'stage_opened' || msg.event === 'stage_new';
-      if (typeof window.reloadStage === 'function') window.reloadStage(fullReload);
+      // Incremental edit — reload scene but don't reset camera
+      if (typeof window.reloadStage === 'function') window.reloadStage(false);
       refreshPrims();
     }
     if (msg.event === 'stage_opened') {
       document.getElementById('stage-label').textContent = msg.path || '[stage]';
       setStatus('Opened: ' + msg.path);
+      // New stage opened — reload and reframe
       if (typeof window.reloadStage === 'function') window.reloadStage(true);
+      refreshPrims();
     }
     if (msg.event === 'stage_new') {
       document.getElementById('stage-label').textContent = '[new]';
