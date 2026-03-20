@@ -583,14 +583,27 @@ async def stage_export_usda():
     stage = _current_stage()
     if stage:
         try:
-            usda = stage.GetRootLayer().ExportToString()
+            # Flatten all references/sublayers into a single USDA
+            # so the WASM client gets everything in one file
+            from pxr import UsdUtils
+            flat_layer = UsdUtils.FlattenLayerStack(stage)
+            usda = flat_layer.ExportToString()
             return Response(
                 content=usda,
                 media_type="model/vnd.usda",
                 headers={"Cache-Control": "no-store"},
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Flatten failed, exporting root layer: %s", exc)
+            try:
+                usda = stage.GetRootLayer().ExportToString()
+                return Response(
+                    content=usda,
+                    media_type="model/vnd.usda",
+                    headers={"Cache-Control": "no-store"},
+                )
+            except Exception:
+                pass
     # Fallback to stub
     return Response(
         content=_stub_stage.to_usda(),
@@ -677,14 +690,15 @@ async def stage_open(req: _StageOpenReq):
 
     if _pxr_available:
         try:
-            from pxr import Usd
+            from pxr import Usd, Ar
             if not os.path.exists(p):
                 raise HTTPException(status_code=404, detail=f"File not found: {p}")
-            _pxr_stage = Usd.Stage.Open(p)
+            # Open with LoadNone first (fast), then load all
+            _pxr_stage = Usd.Stage.Open(p, Usd.Stage.LoadAll)
             if not _pxr_stage:
                 raise HTTPException(status_code=400, detail=f"Failed to open: {p}")
-            logger.info("Opened stage: %s (%d prims)", p,
-                        sum(1 for _ in _pxr_stage.TraverseAll()))
+            prim_count = sum(1 for _ in _pxr_stage.TraverseAll())
+            logger.info("Opened stage: %s (%d prims)", p, prim_count)
             await _conns.broadcast({"event": "stage_opened", "path": p})
             await _conns.broadcast({"event": "scene_changed"})
             return {"ok": True, "path": p}
