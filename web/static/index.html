@@ -1207,6 +1207,9 @@ async function takeSnapshot() {
       const reason = detail.detail || 'render pipeline not available';
       setStatus('Snapshot unavailable: ' + reason, true);
       console.warn('[snapshot] 501:', reason);
+      // Hide button permanently — server confirmed it can't render
+      var btn = document.getElementById('btn-snapshot');
+      if (btn) btn.style.display = 'none';
       return;
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);

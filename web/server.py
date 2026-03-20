@@ -684,21 +684,15 @@ async def health():
 
     # ── Verify actual render pipeline (not just GPU hardware presence) ─────
     # gpu_available only means nvidia-smi found a card.  snapshot_available
-    # is True only when at least one Hydra render backend is importable too.
+    # is True only when a test render actually succeeds end-to-end.
     try:
         from render_snapshot import check_gpu_rendering_available
         render_info = check_gpu_rendering_available()
         result["gpu"]["render_status"] = render_info
-        has_backend = (
-            render_info.get("frame_recorder", False)
-            or render_info.get("imaging_gl", False)
-        )
-        result["gpu"]["snapshot_available"] = (
-            result["gpu"].get("gpu_available", False) and has_backend
-        )
-        if not has_backend:
+        result["gpu"]["snapshot_available"] = render_info.get("test_render_ok", False)
+        if not result["gpu"]["snapshot_available"]:
             result["gpu"]["snapshot_reason"] = render_info.get(
-                "reason", "No USD imaging module available")
+                "reason", "GPU render pipeline not functional")
     except ImportError:
         result["gpu"]["snapshot_available"] = False
         result["gpu"]["snapshot_reason"] = "render_snapshot module not importable"

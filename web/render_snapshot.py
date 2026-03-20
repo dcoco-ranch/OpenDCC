@@ -170,14 +170,22 @@ def _render_via_imaging_gl(stage, width, height, time_code, camera_path) -> byte
 
 
 def check_gpu_rendering_available() -> dict:
-    """Check if GPU rendering is possible. Returns status dict."""
+    """Check if GPU rendering is actually functional (not just importable).
+
+    Goes beyond import checks: tries to initialise an EGL display and,
+    if UsdAppUtils is present, attempts a tiny 1×1 test render so that
+    /health can report *real* capability.
+    """
     result = {
         "frame_recorder": False,
         "imaging_gl": False,
         "egl": False,
+        "egl_initialised": False,
+        "test_render_ok": False,
         "reason": "",
     }
 
+    # ── Module import checks ──────────────────────────────────────────────
     try:
         from pxr import UsdAppUtils  # noqa: F401
         result["frame_recorder"] = True
@@ -190,18 +198,66 @@ def check_gpu_rendering_available() -> dict:
     except ImportError:
         pass
 
-    # Check EGL
+    if not result["frame_recorder"] and not result["imaging_gl"]:
+        result["reason"] = "No USD imaging module available (UsdAppUtils or UsdImagingGL)"
+        return result
+
+    # ── EGL display: load + initialise (not just GetDisplay) ──────────────
     try:
         import ctypes
         egl = ctypes.CDLL("libEGL.so.1")
-        display = egl.eglGetDisplay(0)  # EGL_DEFAULT_DISPLAY
-        result["egl"] = display != 0
-    except Exception:
-        pass
 
-    if not result["frame_recorder"] and not result["imaging_gl"]:
-        result["reason"] = "No USD imaging module available (UsdAppUtils or UsdImagingGL)"
-    elif not result["egl"]:
-        result["reason"] = "EGL not available — GPU headless rendering may not work"
+        EGL_DEFAULT_DISPLAY = 0
+        EGL_NO_DISPLAY = 0
+        display = egl.eglGetDisplay(EGL_DEFAULT_DISPLAY)
+        result["egl"] = display != EGL_NO_DISPLAY
+
+        if result["egl"]:
+            major, minor = ctypes.c_int(0), ctypes.c_int(0)
+            ok = egl.eglInitialize(display, ctypes.byref(major), ctypes.byref(minor))
+            result["egl_initialised"] = bool(ok)
+            if ok:
+                result["egl_version"] = f"{major.value}.{minor.value}"
+            else:
+                result["reason"] = "EGL display found but eglInitialize() failed"
+                return result
+        else:
+            result["reason"] = "eglGetDisplay returned EGL_NO_DISPLAY — no GPU accessible"
+            return result
+    except Exception as exc:
+        result["reason"] = f"EGL not available: {exc}"
+        return result
+
+    # ── Tiny test render (catches driver/context failures early) ──────────
+    if result["frame_recorder"]:
+        try:
+            from pxr import Usd, UsdGeom, UsdAppUtils, Sdf
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+            UsdGeom.Xform.Define(stage, Sdf.Path("/Test"))
+            stage.SetDefaultPrim(stage.GetPrimAtPath(Sdf.Path("/Test")))
+
+            recorder = UsdAppUtils.FrameRecorder()
+            recorder.SetImageWidth(1)
+
+            tmp_path = "/tmp/_opendcc_gpu_test.png"
+            recorder.Record(stage, Usd.TimeCode.Default(), tmp_path)
+
+            if os.path.exists(tmp_path):
+                result["test_render_ok"] = True
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            else:
+                result["reason"] = "FrameRecorder.Record() produced no output"
+        except Exception as exc:
+            result["reason"] = f"Test render failed: {exc}"
+    else:
+        # imaging_gl only — we validated EGL init, that's the best we can do
+        result["test_render_ok"] = result["egl_initialised"]
+
+    if not result["test_render_ok"] and not result["reason"]:
+        result["reason"] = "GPU render pipeline not functional"
 
     return result
