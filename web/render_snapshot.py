@@ -38,8 +38,16 @@ log = logging.getLogger("opendcc.render")
 # ═════════════════════════════════════════════════════════════════════════════
 
 def render_stage_to_png(stage, width: int = 1280, height: int = 720,
-                        time_code=None, camera_path: str = "") -> bytes | None:
+                        time_code=None, camera_path: str = "",
+                        viewport_camera: dict = None) -> bytes | None:
     """Render *stage* to PNG bytes via a GPU subprocess.
+
+    Parameters
+    ----------
+    viewport_camera : dict, optional
+        {"eye": [x,y,z], "target": [x,y,z], "fov": float,
+         "aspect": float, "near": float, "far": float}
+        When provided the snapshot matches the client's Three.js viewport.
 
     Returns PNG bytes on success, or None if rendering is unavailable.
     """
@@ -88,6 +96,8 @@ def render_stage_to_png(stage, width: int = 1280, height: int = 720,
             cmd += ["--camera", camera_path]
         if tc_arg:
             cmd += ["--time", tc_arg]
+        if viewport_camera:
+            cmd += ["--viewport-camera", json.dumps(viewport_camera)]
 
         result = subprocess.run(
             cmd,

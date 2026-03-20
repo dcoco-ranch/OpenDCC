@@ -1201,7 +1201,22 @@ window.setStatus = setStatus;
 async function takeSnapshot() {
   setStatus('Rendering snapshot on server GPU…');
   try {
-    const r = await fetch('/api/render/snapshot?width=1920&height=1080', { cache: 'no-store' });
+    // Gather viewport camera state from Three.js
+    const cam = window._threeCamera;
+    const ctrl = window._threeControls;
+    const params = new URLSearchParams({
+      width: 1920,
+      height: 1080,
+    });
+    if (cam && ctrl) {
+      params.set('eye',    cam.position.toArray().join(','));
+      params.set('target', ctrl.target.toArray().join(','));
+      params.set('fov',    cam.fov.toFixed(2));
+      params.set('aspect', cam.aspect.toFixed(4));
+      params.set('near',   cam.near.toFixed(4));
+      params.set('far',    cam.far.toFixed(2));
+    }
+    const r = await fetch('/api/render/snapshot?' + params.toString(), { cache: 'no-store' });
     if (r.status === 501) {
       const detail = await r.json().catch(() => ({}));
       const reason = detail.detail || 'render pipeline not available';

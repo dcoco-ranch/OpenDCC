@@ -593,11 +593,17 @@ async def render_snapshot(
     height: int = 720,
     camera: str = "",
     time: float = None,
+    eye: str = "",
+    target: str = "",
+    fov: float = 0,
+    aspect: float = 0,
+    near: float = 0,
+    far: float = 0,
 ):
     """Render the current stage via Hydra Storm (GPU) and return a PNG.
 
-    Falls back to 501 if GPU rendering is not available — the client should
-    then use WASM-based rendering (already the default in the viewport).
+    If eye/target/fov are provided, the snapshot matches the client viewport.
+    Otherwise falls back to auto-framing from the bounding box.
     """
     stage = _current_stage()
     if not stage:
@@ -612,7 +618,26 @@ async def render_snapshot(
         from pxr import Usd
 
         tc = Usd.TimeCode(time) if time is not None else None
-        png_bytes = render_stage_to_png(stage, width, height, tc, camera)
+
+        # Build viewport camera dict if client sent eye/target/fov
+        viewport_cam = None
+        if eye and target and fov:
+            try:
+                viewport_cam = {
+                    "eye":    [float(v) for v in eye.split(",")],
+                    "target": [float(v) for v in target.split(",")],
+                    "fov":    fov,
+                    "aspect": aspect if aspect > 0 else (width / height),
+                    "near":   near if near > 0 else 0.01,
+                    "far":    far if far > 0 else 100000,
+                }
+            except (ValueError, IndexError):
+                pass  # Fall back to auto-framing
+
+        png_bytes = render_stage_to_png(
+            stage, width, height, tc, camera,
+            viewport_camera=viewport_cam,
+        )
 
         if png_bytes is None:
             raise HTTPException(

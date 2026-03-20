@@ -228,7 +228,8 @@ def _probe():
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render(usda_path: str, output_path: str, width: int, height: int,
-            camera_path: str = "", time_val: str = ""):
+            camera_path: str = "", time_val: str = "",
+            viewport_camera: dict = None):
     """Render a USDA file to PNG."""
     ok, info = _init_egl()
     if not ok:
@@ -256,9 +257,59 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
         if cam_prim and cam_prim.IsValid():
             usd_cam = UsdGeom.Camera(cam_prim)
 
+    # ── Viewport camera (matches client Three.js view) ────────────────────
+    if usd_cam is None and viewport_camera:
+        from pxr import Gf
+        try:
+            eye_vals    = viewport_camera["eye"]
+            target_vals = viewport_camera["target"]
+            vfov_deg    = viewport_camera.get("fov", 27)
+            aspect      = viewport_camera.get("aspect", width / height)
+            near_clip   = viewport_camera.get("near", 0.01)
+            far_clip    = viewport_camera.get("far", 100000)
+
+            eye    = Gf.Vec3d(*eye_vals)
+            target = Gf.Vec3d(*target_vals)
+            up     = Gf.Vec3d(0, 1, 0)
+
+            # Three.js PerspectiveCamera.fov is VERTICAL fov in degrees.
+            # USD Camera uses horizontalAperture + focalLength.
+            # Formula: focalLength = (hAperture / 2) / tan(hfov / 2)
+            # hfov = 2 * atan(tan(vfov/2) * aspect)
+            import math
+            vfov_rad = math.radians(vfov_deg)
+            hfov_rad = 2.0 * math.atan(math.tan(vfov_rad / 2.0) * aspect)
+
+            h_aperture = 36.0  # standard 35mm film (mm)
+            focal_length = (h_aperture / 2.0) / math.tan(hfov_rad / 2.0)
+
+            cam_path_s = Sdf.Path("/_SnapshotCam")
+            cam_def = UsdGeom.Camera.Define(stage, cam_path_s)
+            cam_def.GetFocalLengthAttr().Set(float(focal_length))
+            cam_def.GetHorizontalApertureAttr().Set(float(h_aperture))
+            cam_def.GetVerticalApertureAttr().Set(float(h_aperture / aspect))
+            cam_def.GetClippingRangeAttr().Set(
+                Gf.Vec2f(float(near_clip), float(far_clip)))
+
+            # Look-at transform
+            look_at = Gf.Matrix4d()
+            look_at.SetLookAt(eye, target, up)
+            cam_xform = look_at.GetInverse()
+
+            xf = UsdGeom.Xformable(cam_def.GetPrim())
+            xf.AddTransformOp().Set(cam_xform)
+
+            usd_cam = cam_def
+            print(f"Viewport cam: eye={eye_vals} target={target_vals} "
+                  f"vfov={vfov_deg:.1f}° focal={focal_length:.1f}mm",
+                  file=sys.stderr)
+        except Exception as exc:
+            print(f"Viewport camera setup failed: {exc}", file=sys.stderr)
+            usd_cam = None
+
+    # ── Fallback: auto-frame from bounding box ───────────────────────────
     if usd_cam is None:
-        # Create a default camera looking at the stage bounding box
-        from pxr import Gf, UsdGeom as UG, UsdLux
+        from pxr import Gf, UsdGeom as UG
         bbox_cache = UG.BBoxCache(tc, [UG.Tokens.default_])
         root_prim = stage.GetDefaultPrim() or stage.GetPseudoRoot()
         bbox = bbox_cache.ComputeWorldBound(root_prim)
@@ -268,27 +319,23 @@ def _render(usda_path: str, output_path: str, width: int, height: int,
         if size < 0.001:
             size = 10.0
 
-        # ── Camera with proper look-at transform ─────────────────────────
-        cam_path = Sdf.Path("/_SnapshotCam")
-        cam_prim_def = UsdGeom.Camera.Define(stage, cam_path)
-        cam_prim_def.GetFocalLengthAttr().Set(35.0)
-        cam_prim_def.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, size * 20))
+        cam_path_s = Sdf.Path("/_SnapshotCam")
+        cam_def = UsdGeom.Camera.Define(stage, cam_path_s)
+        cam_def.GetFocalLengthAttr().Set(35.0)
+        cam_def.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, size * 20))
 
         dist = size * 1.8
         eye = Gf.Vec3d(center[0] + dist * 0.6,
                        center[1] + dist * 0.45,
                        center[2] + dist * 0.6)
 
-        # Compute look-at matrix: eye → center, up = +Y
         look_at = Gf.Matrix4d()
         look_at.SetLookAt(eye, center, Gf.Vec3d(0, 1, 0))
-        # SetLookAt returns a view matrix — we need the inverse (camera xform)
-        cam_xform = look_at.GetInverse()
 
-        xf = UsdGeom.Xformable(cam_prim_def.GetPrim())
-        xf.AddTransformOp().Set(cam_xform)
+        xf = UsdGeom.Xformable(cam_def.GetPrim())
+        xf.AddTransformOp().Set(look_at.GetInverse())
 
-        usd_cam = cam_prim_def
+        usd_cam = cam_def
 
     # ── Ensure at least one light exists ──────────────────────────────────
     has_light = False
@@ -326,13 +373,18 @@ if __name__ == "__main__":
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--camera", type=str, default="")
     parser.add_argument("--time",   type=str, default="")
+    parser.add_argument("--viewport-camera", type=str, default="",
+                        help="JSON dict: {eye, target, fov, aspect, near, far}")
     args = parser.parse_args()
 
     if args.probe:
         _probe()
     elif args.usda and args.output:
+        vc = None
+        if args.viewport_camera:
+            vc = json.loads(args.viewport_camera)
         _render(args.usda, args.output, args.width, args.height,
-                args.camera, args.time)
+                args.camera, args.time, viewport_camera=vc)
     else:
         parser.print_help()
         sys.exit(1)
