@@ -691,6 +691,26 @@ function connectWS() {
       document.getElementById('dcc-version').textContent = v;
       if (!msg.usd_wasm)
         setStatus('⚠ usd-wasm not found – clone needle-tools/usd-viewer next to OpenDCC', true);
+
+      // Check GPU availability via /health (reliable here — WS is connected)
+      fetch('/health').then(r => r.json()).then(h => {
+        console.log('[ws:connected] /health:', h);
+        if (h.gpu && h.gpu.gpu_available === true) {
+          var btn = document.getElementById('btn-snapshot');
+          if (btn) btn.style.display = '';
+          setStatus('GPU: ' + (h.gpu.gpu_name || 'detected') + ' — snapshot available');
+          console.log('[ws:connected] GPU detected, snapshot button shown');
+        }
+      }).catch(function(e) { console.warn('[ws:connected] /health check failed:', e); });
+
+      // Load stage info
+      fetch('/api/stage/info').then(r => r.json()).then(function(info) {
+        if (info.stage) {
+          document.getElementById('stage-label').textContent =
+            info.stage.identifier || '[stage]';
+          refreshPrims();
+        }
+      }).catch(function(e) {});
     }
     if (msg.event === 'scene_changed') {
       setStatus('Stage changed – reloading…');
@@ -921,62 +941,11 @@ async function takeSnapshot() {
 window.takeSnapshot = takeSnapshot;
 
 // ── Init ──────────────────────────────────────────────────────────────────
-(async () => {
-  connectWS();
-
-  let h = {};
-  try {
-    h = await api('/health');
-    console.log('[init] /health:', JSON.stringify(h));
-  } catch (e) {
-    console.error('[init] /health failed:', e);
-  }
-
-  if (h.opendcc) {
-    setStatus('OpenDCC ready.');
-  } else if (h.pxr) {
-    setStatus('USD Python backend ready.');
-  } else if (h.usd_wasm_found === false) {
-    setStatus('⚠ usd-wasm missing – viewport will not render', true);
-  } else {
-    setStatus('Running in stub mode (no OpenDCC core).');
-  }
-
-  // Show Snapshot button if server has GPU
-  try {
-    const gpuAvailable = h.gpu && h.gpu.gpu_available === true;
-    console.log('[init] GPU available:', gpuAvailable, h.gpu);
-    if (gpuAvailable) {
-      const btn = document.getElementById('btn-snapshot');
-      if (btn) {
-        btn.style.display = '';
-        console.log('[init] Snapshot button shown');
-      }
-      setStatus('GPU: ' + (h.gpu.gpu_name || 'detected') + ' — server-side rendering available');
-    }
-  } catch (e) {
-    console.error('[init] GPU check error:', e);
-  }
-
-  // Show render mode in status bar
-  const renderMode = (h.gpu && h.gpu.render_mode) || 'client_wasm';
-  const statsEl = document.getElementById('vp-stats');
-  if (statsEl) {
-    statsEl.title = renderMode === 'server_gpu'
-      ? 'Render: Server GPU + Client WASM' : 'Render: Client WASM only';
-  }
-
-  try {
-    const info = await api('/api/stage/info');
-    if (info.stage) {
-      document.getElementById('stage-label').textContent =
-        info.stage.identifier || '[stage]';
-      refreshPrims();
-    }
-  } catch (e) {
-    console.error('[init] stage/info failed:', e);
-  }
-})();
+// WebSocket connected handler (above) takes care of:
+//   - GPU detection + Snapshot button
+//   - Stage info + Outliner refresh
+// This block only starts the WS connection.
+connectWS();
 </script>
 </body>
 </html>
