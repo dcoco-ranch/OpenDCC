@@ -924,9 +924,14 @@ function initViewportPicking() {
     if (hits.length > 0) {
       var obj = hits[0].object;
       var primPath = '';
+      // Debug: log what the hit object looks like
+      console.log('[pick] hit:', obj.name, obj.type, 'userData:', obj.userData,
+                  'parent:', obj.parent?.name);
       while (obj && obj !== usdRoot) {
         if (obj.userData && obj.userData.path) { primPath = obj.userData.path; break; }
         if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
+        // Also try matching by name (Hydra delegate may use short names)
+        if (obj.name && obj.name.length > 0) { primPath = '/World/' + obj.name; break; }
         obj = obj.parent;
       }
       if (primPath) {
@@ -957,6 +962,44 @@ function highlightSelectedRows() {
   document.querySelectorAll('.prim-row').forEach(function(r) {
     r.classList.toggle('selected', _selectedPaths.indexOf(r.dataset.path) >= 0);
   });
+}
+
+// Find Three.js object matching a USD prim path, then attach gizmo
+function _attachGizmoForPrim(primPath) {
+  if (!window._attachGizmo || !window._usdRoot) return;
+  if (!primPath) { window._attachGizmo(null); return; }
+
+  var usdRoot = window._usdRoot;
+  var found = null;
+
+  // The Hydra delegate names meshes with the prim path or fragments of it
+  usdRoot.traverse(function(obj) {
+    if (found) return;
+    // Check various naming conventions
+    var n = obj.name || '';
+    var ud = obj.userData || {};
+    if (ud.path === primPath || n === primPath ||
+        n.endsWith(primPath) || ('/' + n) === primPath ||
+        n === primPath.split('/').pop()) {
+      found = obj;
+    }
+  });
+
+  if (found) {
+    found._primPath = primPath;
+    window._attachGizmo(found);
+    console.log('[gizmo] attached to', primPath, found.type);
+  } else {
+    // No matching mesh — try attaching to any visible mesh (debug)
+    console.log('[gizmo] no Three.js object found for', primPath);
+    // List what names exist in the scene for debugging
+    var names = [];
+    usdRoot.traverse(function(obj) {
+      if (obj.isMesh || obj.isGroup) names.push(obj.name || '(unnamed ' + obj.type + ')');
+    });
+    if (names.length <= 20) console.log('[gizmo] scene objects:', names);
+    window._attachGizmo(null);
+  }
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
@@ -1296,6 +1339,10 @@ async function selectPrimByPath(path) {
   document.querySelectorAll('.prim-row').forEach(function(r) {
     r.classList.toggle('selected', _selectedPaths.indexOf(r.dataset.path) >= 0);
   });
+
+  // Try to attach gizmo to the corresponding Three.js object
+  _attachGizmoForPrim(path);
+
   var key = path.replace(/^\//, '');
   if (!key) return;
   var d = await api('/api/prim/' + key);
