@@ -513,6 +513,7 @@ renderer.domElement.addEventListener('pointermove', () => {
 
 // Also keep orbit disabled during entire drag
 gizmo.addEventListener('dragging-changed', (ev) => {
+  console.log('[gizmo] dragging-changed:', ev.value);
   controls.enabled = !ev.value;
 });
 
