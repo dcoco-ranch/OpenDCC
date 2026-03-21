@@ -880,6 +880,9 @@ function animate() {
     }
   }
 
+  // Update selection highlight box to follow the object
+  if (_selBox.visible) _selBox.update();
+
   renderer.render(scene, camera);
 
   _frameCount++;
