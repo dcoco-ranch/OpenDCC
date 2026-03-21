@@ -1197,6 +1197,33 @@ class _DuplicateReq(BaseModel):
 
 @app.post("/api/prims/duplicate")
 async def cmd_duplicate_prims(req: _DuplicateReq):
+    # ── pxr mode ──────────────────────────────────────────────────────────
+    if _pxr_available and not _opendcc_available:
+        stage = _current_stage()
+        if stage:
+            from pxr import Sdf, Usd
+            paths = req.paths or []
+            if not paths:
+                return {"ok": False, "error": "nothing selected"}
+            new_paths = []
+            for p in paths:
+                src_prim = stage.GetPrimAtPath(Sdf.Path(p))
+                if not src_prim or not src_prim.IsValid():
+                    continue
+                parent = Sdf.Path(p).GetParentPath()
+                base = src_prim.GetName()
+                existing = {c.GetName() for c in stage.GetPrimAtPath(parent).GetChildren()}
+                name, i = base + "_copy", 1
+                while name in existing:
+                    name = f"{base}_copy{i}"; i += 1
+                new_path = parent.AppendChild(name)
+                Sdf.CopySpec(stage.GetRootLayer(),
+                             Sdf.Path(p), stage.GetRootLayer(), new_path)
+                new_paths.append(str(new_path))
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "new_paths": new_paths}
+
+    # ── Stub mode ─────────────────────────────────────────────────────────
     if not _opendcc_available:
         paths = req.paths or list(_stub_stage._selection)
         if not paths:
@@ -1221,6 +1248,31 @@ class _GroupReq(BaseModel):
 
 @app.post("/api/prims/group")
 async def cmd_group_prims(req: _GroupReq):
+    # ── pxr mode ──────────────────────────────────────────────────────────
+    if _pxr_available and not _opendcc_available:
+        stage = _current_stage()
+        if stage:
+            from pxr import Sdf, UsdGeom
+            paths = req.paths or []
+            if not paths:
+                return {"ok": False, "error": "nothing selected"}
+            parent = Sdf.Path(paths[0]).GetParentPath()
+            existing = {c.GetName() for c in stage.GetPrimAtPath(parent).GetChildren()}
+            name, i = "Group", 1
+            while name in existing:
+                name = f"Group{i}"; i += 1
+            group_path = parent.AppendChild(name)
+            UsdGeom.Xform.Define(stage, group_path)
+            # Reparent prims under group (simplified — no transform preservation)
+            for p in paths:
+                src = Sdf.Path(p)
+                dst = group_path.AppendChild(src.name)
+                Sdf.CopySpec(stage.GetRootLayer(), src, stage.GetRootLayer(), dst)
+                stage.RemovePrim(src)
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "path": str(group_path)}
+
+    # ── Stub mode ─────────────────────────────────────────────────────────
     if not _opendcc_available:
         paths = req.paths or list(_stub_stage._selection)
         if not paths:
@@ -1284,6 +1336,20 @@ class _RenameReq(BaseModel):
 
 @app.post("/api/prims/rename")
 async def cmd_rename_prim(req: _RenameReq):
+    # ── pxr mode ──────────────────────────────────────────────────────────
+    if _pxr_available and not _opendcc_available:
+        stage = _current_stage()
+        if stage:
+            from pxr import Sdf
+            src = Sdf.Path(req.path)
+            parent = src.GetParentPath()
+            new_path = parent.AppendChild(req.new_name)
+            Sdf.CopySpec(stage.GetRootLayer(), src, stage.GetRootLayer(), new_path)
+            stage.RemovePrim(src)
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True, "new_path": str(new_path)}
+
+    # ── Stub mode ─────────────────────────────────────────────────────────
     if not _opendcc_available:
         _stub_stage._push_undo()
         new_path = _stub_stage.rename_prim(req.path, req.new_name)
@@ -1306,6 +1372,21 @@ class _VisibilityReq(BaseModel):
 
 @app.post("/api/prims/visibility")
 async def cmd_set_visibility(req: _VisibilityReq):
+    # ── pxr mode ──────────────────────────────────────────────────────────
+    if _pxr_available and not _opendcc_available:
+        stage = _current_stage()
+        if stage:
+            from pxr import Sdf, UsdGeom
+            paths = req.paths or []
+            token = UsdGeom.Tokens.inherited if req.visible else UsdGeom.Tokens.invisible
+            for p in paths:
+                prim = stage.GetPrimAtPath(Sdf.Path(p))
+                if prim and prim.IsValid():
+                    UsdGeom.Imageable(prim).GetVisibilityAttr().Set(token)
+            await _conns.broadcast({"event": "scene_changed"})
+            return {"ok": True}
+
+    # ── Stub mode ─────────────────────────────────────────────────────────
     if not _opendcc_available:
         paths = req.paths or list(_stub_stage._selection)
         _stub_stage._push_undo()

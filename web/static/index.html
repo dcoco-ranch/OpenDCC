@@ -354,6 +354,13 @@
     <button onclick="cmdRedo()" title="Redo (Ctrl+Shift+Z)">↷</button>
     <button onclick="frameAll() || (_pendingFrame=true)" title="Frame all (F)">⊡ Frame</button>
     <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
+    <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
+    <button onclick="toggleWireframe()" title="Toggle wireframe (Z)">◇ Wire</button>
+    <button onclick="setViewPreset('front')" title="Front view (1)">F</button>
+    <button onclick="setViewPreset('right')" title="Right view (3)">R</button>
+    <button onclick="setViewPreset('top')" title="Top view (7)">T</button>
+    <button onclick="setViewPreset('persp')" title="Perspective (5)">P</button>
+    <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
     <button id="btn-snapshot" onclick="takeSnapshot()" title="Server-side GPU render (PNG)" style="display:none">📷 Snapshot</button>
   </div>
 
@@ -536,18 +543,65 @@ gizmo.addEventListener('mouseUp', () => {
 });
 
 function attachGizmo(obj) {
-  if (!obj) { gizmo.detach(); return; }
-  // Hydra WASM delegate sets matrixAutoUpdate=false (controls matrix directly).
-  // TransformControls needs matrixAutoUpdate=true to work properly.
+  if (!obj) {
+    gizmo.detach();
+    if (window._highlightObject) window._highlightObject(null);
+    return;
+  }
   obj.matrixAutoUpdate = true;
   obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
   gizmo.attach(obj);
-  console.log('[gizmo] attached, pos:', obj.position.toArray(), 'matrixAutoUpdate:', obj.matrixAutoUpdate);
+  if (window._highlightObject) window._highlightObject(obj);
 }
 
 window._gizmo      = gizmo;
 window._attachGizmo = attachGizmo;
 window._gizmoJustDragged = false;
+
+// ── Selection highlight (wireframe box) ──────────────────────────────────
+const _selBox = new THREE.BoxHelper(new THREE.Mesh(), 0x00ccff);
+_selBox.visible = false;
+scene.add(_selBox);
+
+function highlightObject(obj) {
+  if (!obj || !obj.geometry) { _selBox.visible = false; return; }
+  _selBox.setFromObject(obj);
+  _selBox.visible = true;
+}
+window._highlightObject = highlightObject;
+
+// ── Wireframe toggle ─────────────────────────────────────────────────────
+let _wireMode = false;
+function toggleWireframe() {
+  _wireMode = !_wireMode;
+  usdRoot.traverse(obj => {
+    if (obj.isMesh && obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(m => { m.wireframe = _wireMode; m.needsUpdate = true; });
+    }
+  });
+}
+window.toggleWireframe = toggleWireframe;
+
+// ── View presets ─────────────────────────────────────────────────────────
+function setViewPreset(view) {
+  const target = controls.target.clone();
+  const dist = camera.position.distanceTo(target);
+  const presets = {
+    front: new THREE.Vector3(0, 0, dist),
+    back:  new THREE.Vector3(0, 0, -dist),
+    right: new THREE.Vector3(dist, 0, 0),
+    left:  new THREE.Vector3(-dist, 0, 0),
+    top:   new THREE.Vector3(0, dist, 0.001),
+    bottom:new THREE.Vector3(0, -dist, 0.001),
+    persp: new THREE.Vector3(dist*0.6, dist*0.45, dist*0.6),
+  };
+  const offset = presets[view] || presets.persp;
+  camera.position.copy(target).add(offset);
+  camera.lookAt(target);
+  controls.update();
+}
+window.setViewPreset = setViewPreset;
 
 // ── Resize ────────────────────────────────────────────────────────────────
 function resizeViewport() {
@@ -622,6 +676,11 @@ document.addEventListener('keydown', e => {
   if (e.key === 'w' || e.key === 'W') { gizmo.setMode('translate'); }
   if (e.key === 'e' || e.key === 'E') { gizmo.setMode('rotate'); }
   if (e.key === 'r' || e.key === 'R') { gizmo.setMode('scale'); }
+  if (e.key === 'z' || e.key === 'Z') { if (typeof toggleWireframe === 'function') toggleWireframe(); }
+  if (e.key === '1') { if (typeof setViewPreset === 'function') setViewPreset('front'); }
+  if (e.key === '3') { if (typeof setViewPreset === 'function') setViewPreset('right'); }
+  if (e.key === '7') { if (typeof setViewPreset === 'function') setViewPreset('top'); }
+  if (e.key === '5') { if (typeof setViewPreset === 'function') setViewPreset('persp'); }
 });
 
 // ── USD state ─────────────────────────────────────────────────────────────
