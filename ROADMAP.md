@@ -119,7 +119,7 @@
 **Tag : `milestone/v5.0-animation`**
 
 ### 5.1 — Timeline web (remplace les timeline Qt)
-- [ ] Barre de timeline avec scrubbing (lecture du `startTimeCode` / `endTimeCode` depuis le stage)
+- [x] Barre de timeline avec scrubbing (lecture du `startTimeCode` / `endTimeCode` depuis le stage)
 - [ ] Play / Pause / Step forward / Step backward
 - [ ] Sync `_driver.SetTime(tc)` côté WASM et attributs time-sampled côté serveur
 - [ ] FPS configurable

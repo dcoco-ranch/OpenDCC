@@ -709,10 +709,60 @@ document.addEventListener('keydown', e => {
 // ── USD state ─────────────────────────────────────────────────────────────
 let _driver      = null;
 let _usdReady    = false;
-let _endTimeCode = 1;
-let _timeout     = 40;          // ms per time-code (1000 / timecodes-per-sec)
+let _startTimeCode = 0;
+let _endTimeCode   = 100;
+let _timeCodesPerSecond = 24;
 let _pendingFrame = false;      // set true → animate loop will frameAll after next Draw()
 let _loading      = false;      // prevents concurrent loadStage calls
+let _currentTimeCode = 0;
+
+function _clampTimeCode(tc) {
+  const n = Number(tc);
+  if (!Number.isFinite(n)) return _startTimeCode;
+  return Math.min(_endTimeCode, Math.max(_startTimeCode, n));
+}
+
+function _formatTimeCode(tc) {
+  const rounded = Math.round(tc);
+  if (Math.abs(tc - rounded) < 1e-4) return String(rounded);
+  return tc.toFixed(3).replace(/\.?0+$/, '');
+}
+
+function _applyTimelineRange(startTc, endTc, tps, preserveCurrent = true) {
+  let start = Number(startTc);
+  let end = Number(endTc);
+  let fps = Number(tps);
+
+  if (!Number.isFinite(start)) start = 0;
+  if (!Number.isFinite(end)) end = start + 100;
+  if (end <= start) end = start + 100;
+  if (!Number.isFinite(fps) || fps <= 0) fps = 24;
+
+  _startTimeCode = start;
+  _endTimeCode = end;
+  _timeCodesPerSecond = fps;
+
+  _currentTimeCode = preserveCurrent ? _clampTimeCode(_currentTimeCode) : _startTimeCode;
+
+  const scrub = document.getElementById('timeline-scrub');
+  if (scrub) {
+    scrub.min = String(_startTimeCode);
+    scrub.max = String(_endTimeCode);
+    scrub.step = String(Math.max(0.001, 1 / _timeCodesPerSecond));
+    scrub.value = String(_currentTimeCode);
+  }
+
+  const frameLabel = document.getElementById('timeline-frame');
+  if (frameLabel) frameLabel.textContent = _formatTimeCode(_currentTimeCode);
+
+  window._timelineRange = {
+    start: _startTimeCode,
+    end: _endTimeCode,
+    fps: _timeCodesPerSecond,
+  };
+}
+
+_applyTimelineRange(_startTimeCode, _endTimeCode, _timeCodesPerSecond, false);
 
 // Virtual FS path inside the WASM runtime – must end in .usda so SDF
 // can determine the file format without an HTTP round-trip.
@@ -912,8 +962,12 @@ async function loadStage(reframe = true) {
       String.fromCharCode(stage.GetUpAxis?.() ?? 89) === 'z'   // 'Y'=89
         ? -Math.PI / 2 : 0;
 
-    if (stage.GetEndTimeCode)        _endTimeCode = stage.GetEndTimeCode();
-    if (stage.GetTimeCodesPerSecond) _timeout     = 1000 / stage.GetTimeCodesPerSecond();
+    const startTimeCode = stage.GetStartTimeCode ? Number(stage.GetStartTimeCode()) : 0;
+    const endTimeCode = stage.GetEndTimeCode ? Number(stage.GetEndTimeCode()) : (startTimeCode + 100);
+    const tps = stage.GetTimeCodesPerSecond ? Number(stage.GetTimeCodesPerSecond()) : 24;
+    _applyTimelineRange(startTimeCode, endTimeCode, tps, !reframe);
+
+    _driver.SetTime(_currentTimeCode);
 
     _usdReady = true;
     hideVpMsg();
@@ -953,7 +1007,6 @@ window.reloadStage     = loadStage;
 window.refreshViewport = loadStage;
 
 // ── Animation / render loop ───────────────────────────────────────────────
-let _animTime  = 0;
 let _prevTime  = performance.now();
 let _frameCount = 0;
 let _lastFpsTs  = performance.now();
@@ -971,28 +1024,31 @@ function animate() {
     const gizmoBusy = window._gizmo && window._gizmo.dragging;
     if (!gizmoBusy) {
       // Timeline: manual scrub overrides auto-play
-      let tc;
+      let tc = _currentTimeCode;
       if (window._manualTimeCode !== undefined) {
-        tc = window._manualTimeCode;
+        tc = _clampTimeCode(window._manualTimeCode);
         window._manualTimeCode = undefined;
       } else if (window._playing !== undefined && !window._playing) {
         // Paused — keep current time
-        tc = _driver.GetTime();
+        tc = _clampTimeCode(_currentTimeCode);
       } else {
-        _animTime += dt;
-        tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
+        const range = Math.max(0.0001, _endTimeCode - _startTimeCode);
+        tc = _currentTimeCode + (dt * _timeCodesPerSecond);
+        if (tc > _endTimeCode) {
+          tc = _startTimeCode + ((tc - _startTimeCode) % range);
+        }
+        tc = _clampTimeCode(tc);
       }
+
+      _currentTimeCode = tc;
       _driver.SetTime(tc);
       _driver.Draw();
 
       // Update timeline scrubber position
       const scrub = document.getElementById('timeline-scrub');
-      if (scrub && _endTimeCode > 0) {
-        scrub.max = _endTimeCode;
-        scrub.value = tc;
-        const fl = document.getElementById('timeline-frame');
-        if (fl) fl.textContent = Math.round(tc);
-      }
+      if (scrub) scrub.value = String(tc);
+      const fl = document.getElementById('timeline-frame');
+      if (fl) fl.textContent = _formatTimeCode(tc);
     }
 
     // Frame the scene AFTER Draw() populates the Three.js scene graph.
@@ -1040,6 +1096,8 @@ window._threeRenderer = renderer;
 window._threeCamera   = camera;
 window._threeControls = controls;
 window._usdRoot       = usdRoot;
+window._formatTimeCode = _formatTimeCode;
+window._clampTimeCode = _clampTimeCode;
 window.THREE          = THREE;
 </script>
 
@@ -1809,11 +1867,13 @@ const _frameLabel = document.getElementById('timeline-frame');
 
 if (_scrub) {
   _scrub.addEventListener('input', function() {
-    _frameLabel.textContent = this.value;
+    var tc = parseFloat(this.value);
+    if (window._clampTimeCode) tc = window._clampTimeCode(tc);
+    _frameLabel.textContent = window._formatTimeCode ? window._formatTimeCode(tc) : String(tc);
     // Set time on the WASM driver
     if (window._threeScene && window._usdRoot) {
       // Will be picked up by animation loop
-      window._manualTimeCode = parseFloat(this.value);
+      window._manualTimeCode = tc;
     }
   });
 }
