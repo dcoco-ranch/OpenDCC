@@ -813,32 +813,94 @@ async function loadStage(reframe = true) {
   try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
   try { USD.FS_unlink('/scene.usda'); } catch (_) {}
 
-  // ── Step 1: fetch USDA ────────────────────────────────────────────────
-  let usda;
+  // ── Step 1: check if stage has physical files (composition) ────────────
+  let stageInfo;
   try {
-    const r = await fetch('/api/stage/export.usda?flatten=true', { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
-    usda = await r.text();
-  } catch (err) {
-    setVpMsg("❌ Failed to fetch stage:\n" + err.message, true);
-    _loading = false;
-    return;
+    const r = await fetch('/api/stage/assets', { cache: 'no-store' });
+    stageInfo = await r.json();
+  } catch (_) {
+    stageInfo = { rootLayer: null, assets: [] };
   }
 
-  // ── Step 2: write into WASM virtual FS ───────────────────────────────
+  let usda;
+  if (stageInfo.rootLayer && stageInfo.assets.length > 0) {
+    // ── Composition mode: pre-load ALL assets into WASM FS ──────────────
+    if (reframe) setVpMsg(`Loading ${stageInfo.count} USD assets…`);
+    console.log(`[loadStage] composition mode: ${stageInfo.count} assets`);
+
+    // Clean WASM FS
+    try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
+    try { USD.FS_rmdir('/assets'); } catch (_) {}
+
+    // Create directory structure and fetch all assets
+    const dirs = new Set();
+    for (const assetPath of stageInfo.assets) {
+      const parts = assetPath.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        dirs.add(parts.slice(0, i).join('/'));
+      }
+    }
+    for (const dir of [...dirs].sort()) {
+      try { USD.FS_createPath('/', dir, true, true); } catch (_) {}
+    }
+
+    // Fetch and write all assets in parallel (batched)
+    const batchSize = 10;
+    const assets = stageInfo.assets;
+    for (let i = 0; i < assets.length; i += batchSize) {
+      const batch = assets.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (assetPath) => {
+        try {
+          const r = await fetch('/api/stage/asset?path=' + encodeURIComponent(assetPath));
+          if (!r.ok) { console.warn('[loadStage] failed to fetch:', assetPath); return; }
+          const buf = await r.arrayBuffer();
+          const dir = '/' + assetPath.substring(0, assetPath.lastIndexOf('/'));
+          const name = assetPath.substring(assetPath.lastIndexOf('/') + 1);
+          try { USD.FS_unlink('/' + assetPath); } catch (_) {}
+          USD.FS_createDataFile(dir || '/', name, new Uint8Array(buf), true, true, true);
+        } catch (e) { console.warn('[loadStage] asset error:', assetPath, e.message); }
+      }));
+      if (reframe) {
+        const pct = Math.min(100, Math.round((i + batchSize) / assets.length * 100));
+        setVpMsg(`Loading assets… ${pct}%`);
+      }
+    }
+
+    // The root layer is already among the assets — use it as STAGE_VPATH
+    // Create a symlink or just read the root
+    const rootPath = '/' + stageInfo.rootLayer;
+    // Read back the root layer we just wrote
+    try {
+      usda = new TextDecoder().decode(USD.FS_readFile(rootPath));
+    } catch (_) {
+      // Fallback: fetch it separately
+      const r = await fetch('/api/stage/export.usda', { cache: 'no-store' });
+      usda = await r.text();
+    }
+  } else {
+    // ── Simple mode: in-memory stage, just fetch USDA ───────────────────
+    try {
+      const r = await fetch('/api/stage/export.usda', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+      usda = await r.text();
+    } catch (err) {
+      setVpMsg("❌ Failed to fetch stage:\n" + err.message, true);
+      _loading = false;
+      return;
+    }
+  }
+
+  // ── Step 2: write root layer into WASM virtual FS ────────────────────
   try {
     const bytes = new TextEncoder().encode(usda);
-    // Try unlink again right before create (race window minimization)
     try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
     USD.FS_createDataFile('/', 'scene.usda', bytes, true, true, true);
   } catch (err) {
-    // If file still exists, try overwriting via FS.writeFile
     try {
       const bytes = new TextEncoder().encode(usda);
       USD.FS_writeFile(STAGE_VPATH, bytes);
-      console.log('[loadStage] FS_writeFile fallback succeeded');
     } catch (err2) {
-      console.error("FS write error (both methods):", err, err2);
+      console.error("FS write error:", err, err2);
       setVpMsg("❌ WASM FS write failed — try reloading the page", true);
       _loading = false;
       return;

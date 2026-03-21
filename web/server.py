@@ -839,6 +839,77 @@ async def stage_export_usda(flatten: bool = False):
     )
 
 
+# ── Stage asset tree (for WASM composition) ──────────────────────────────────
+
+@app.get("/api/stage/assets")
+async def stage_assets():
+    """List all USD files in the stage directory for WASM pre-loading.
+    
+    Returns root layer path and a list of all relative asset paths
+    that should be written into the WASM virtual FS.
+    """
+    import os
+    stage = _current_stage()
+    if not stage:
+        return {"rootLayer": None, "assets": []}
+
+    real_path = stage.GetRootLayer().realPath
+    if not real_path or not os.path.exists(real_path):
+        # In-memory stage — no files to serve
+        return {"rootLayer": None, "assets": []}
+
+    stage_dir = os.path.dirname(real_path)
+    root_name = os.path.basename(real_path)
+    
+    assets = []
+    for dirpath, _dirs, filenames in os.walk(stage_dir):
+        for f in filenames:
+            full = os.path.join(dirpath, f)
+            rel = os.path.relpath(full, stage_dir).replace("\\", "/")
+            ext = os.path.splitext(f)[1].lower()
+            if ext in (".usd", ".usda", ".usdc", ".usdz"):
+                assets.append(rel)
+
+    return {
+        "rootLayer": root_name,
+        "stageDir": stage_dir,
+        "assets": assets,
+        "count": len(assets),
+    }
+
+
+@app.get("/api/stage/asset")
+async def stage_asset(path: str):
+    """Serve a specific asset file from the current stage directory."""
+    import os
+    from pathlib import Path as P
+
+    stage = _current_stage()
+    if not stage:
+        raise HTTPException(status_code=400, detail="No stage")
+
+    real_path = stage.GetRootLayer().realPath
+    if not real_path:
+        raise HTTPException(status_code=400, detail="In-memory stage")
+
+    stage_dir = os.path.dirname(real_path)
+    resolved = os.path.normpath(os.path.join(stage_dir, path))
+    
+    # Security: must stay within stage directory
+    if not resolved.startswith(stage_dir):
+        raise HTTPException(status_code=403, detail="Path traversal denied")
+
+    if not os.path.exists(resolved):
+        raise HTTPException(status_code=404, detail=f"Asset not found: {path}")
+
+    content = P(resolved).read_bytes()
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "max-age=3600"},
+    )
+
+
 # ── Stage dependencies (for WASM composition resolution) ──────────────────────
 
 @app.get("/api/stage/dependencies")
