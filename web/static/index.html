@@ -500,40 +500,44 @@ gizmo.setSpace('world');
 gizmo.visible = false;
 scene.add(gizmo);
 
-// Single dragging-changed handler — this is the standard Three.js pattern
-gizmo.addEventListener('dragging-changed', (ev) => {
-  controls.enabled = !ev.value;
-  // When drag ends (ev.value === false), send transform to server
-  if (!ev.value) {
-    const obj = gizmo.object;
-    if (!obj || !obj._primPath) return;
+// mouseDown/mouseUp = what worked before ("trop bien le gizmo")
+gizmo.addEventListener('mouseDown', () => {
+  controls.enabled = false;
+});
+gizmo.addEventListener('mouseUp', () => {
+  controls.enabled = true;
 
-    const usdR = usdRoot.rotation.x;
-    let px = obj.position.x, py = obj.position.y, pz = obj.position.z;
-    if (Math.abs(usdR + Math.PI / 2) < 0.01) {
-      [px, py, pz] = [obj.position.x, -obj.position.z, obj.position.y];
-    }
+  // Send transform to server
+  const obj = gizmo.object;
+  if (!obj || !obj._primPath) return;
 
-    const rot = obj.rotation;
-    const scl = obj.scale;
-    window._gizmoJustDragged = true;
-    setTimeout(() => { window._gizmoJustDragged = false; }, 2000);
-
-    fetch('/api/prims/xform', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        path: obj._primPath,
-        translate: [px, py, pz],
-        rotate: [THREE.MathUtils.radToDeg(rot.x),
-                 THREE.MathUtils.radToDeg(rot.y),
-                 THREE.MathUtils.radToDeg(rot.z)],
-        scale: [scl.x, scl.y, scl.z],
-      }),
-    }).then(r => {
-      if (r.ok) window.setStatus?.('Transform applied');
-    });
+  const usdR = usdRoot.rotation.x;
+  let px = obj.position.x, py = obj.position.y, pz = obj.position.z;
+  if (Math.abs(usdR + Math.PI / 2) < 0.01) {
+    [px, py, pz] = [obj.position.x, -obj.position.z, obj.position.y];
   }
+
+  const rot = obj.rotation;
+  const scl = obj.scale;
+
+  // Suppress viewport reload for 2s (gizmo already shows correct position)
+  window._gizmoJustDragged = true;
+  setTimeout(() => { window._gizmoJustDragged = false; }, 2000);
+
+  fetch('/api/prims/xform', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      path: obj._primPath,
+      translate: [px, py, pz],
+      rotate: [THREE.MathUtils.radToDeg(rot.x),
+               THREE.MathUtils.radToDeg(rot.y),
+               THREE.MathUtils.radToDeg(rot.z)],
+      scale: [scl.x, scl.y, scl.z],
+    }),
+  }).then(r => {
+    if (r.ok) window.setStatus?.('Transform applied');
+  });
 });
 
 function attachGizmo(obj) {
