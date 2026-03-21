@@ -1481,7 +1481,7 @@ async function loadMaterialPanel(primPath) {
   matSection.innerHTML = '';
 
   var key = primPath.replace(/^\//, '');
-  var mat = await api('/api/prim/' + key + '/material');
+  var mat = await api('/api/material/' + key);
   if (!mat.bound) return;
 
   var sec = document.createElement('div');

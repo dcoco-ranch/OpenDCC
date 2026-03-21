@@ -983,7 +983,7 @@ async def prim_detail(prim_path: str):
 
 # ── Material info ─────────────────────────────────────────────────────────────
 
-@app.get("/api/prim/{prim_path:path}/material")
+@app.get("/api/material/{prim_path:path}")
 async def prim_material(prim_path: str):
     """Get material binding and UsdPreviewSurface parameters for a prim."""
     full_path = "/" + prim_path.lstrip("/")
