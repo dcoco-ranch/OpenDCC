@@ -1144,14 +1144,14 @@ function initViewportPicking() {
         if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
         if (obj.name && obj.name.length > 0) {
           // Hydra delegate uses last path segment as mesh name.
-          // Try common parent paths, or search stage via API.
-          primPath = '/World/' + obj.name;
+          // Keep short name — will resolve via /api/prims/find below
+          primPath = obj.name;
           break;
         }
         obj = obj.parent;
       }
       if (primPath) {
-        // If primPath is just a name (no /), resolve via API
+        // Resolve short names via API (Hydra strips paths to last segment)
         if (!primPath.startsWith('/')) {
           var resolved = await api('/api/prims/find?name=' + encodeURIComponent(primPath));
           if (resolved.matches && resolved.matches.length > 0) {
