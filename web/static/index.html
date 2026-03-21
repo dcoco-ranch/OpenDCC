@@ -1076,6 +1076,10 @@ function animate() {
       if (scrub) scrub.value = String(tc);
       const fl = document.getElementById('timeline-frame');
       if (fl) fl.textContent = _formatTimeCode(tc);
+
+      if (typeof window._onTimeCodeChanged === 'function') {
+        window._onTimeCodeChanged(tc, !!window._playing);
+      }
     }
 
     // Frame the scene AFTER Draw() populates the Three.js scene graph.
@@ -1650,17 +1654,28 @@ function renderAttrWidget(attr, primPath) {
   return '<span class="attr-editable" ondblclick="startAttrEdit(this,\'' + primPath + '\',\'' + attr.name + '\',\'' + type + '\')">' + val + '</span>';
 }
 
-async function selectPrimByPath(path) {
-  document.querySelectorAll('.prim-row').forEach(function(r) {
-    r.classList.toggle('selected', _selectedPaths.indexOf(r.dataset.path) >= 0);
-  });
+async function selectPrimByPath(path, opts) {
+  opts = opts || {};
+
+  if (!opts.skipRowSync) {
+    document.querySelectorAll('.prim-row').forEach(function(r) {
+      r.classList.toggle('selected', _selectedPaths.indexOf(r.dataset.path) >= 0);
+    });
+  }
 
   // Try to attach gizmo to the corresponding Three.js object
-  _attachGizmoForPrim(path);
+  if (!opts.skipGizmo) _attachGizmoForPrim(path);
 
   var key = path.replace(/^\//, '');
   if (!key) return;
-  var d = await api('/api/prim/' + key);
+
+  var tc = Number(opts.timeCode);
+  if (!Number.isFinite(tc)) tc = Number(window._currentTimeCode);
+
+  var primUrl = '/api/prim/' + key;
+  if (Number.isFinite(tc)) primUrl += '?time=' + encodeURIComponent(tc);
+
+  var d = await api(primUrl);
   if (!d.path) return;
   document.getElementById('prim-info').innerHTML =
     '<b>' + d.name + '</b>&nbsp;<span style="color:var(--text2)">' + (d.type || '') + '</span><br/>'
@@ -1697,7 +1712,7 @@ async function selectPrimByPath(path) {
   });
 
   // Load material info if available
-  loadMaterialPanel(path);
+  loadMaterialPanel(path, tc);
 }
 window.selectPrimByPath = selectPrimByPath;
 
@@ -1708,7 +1723,7 @@ async function setMaterialParam(materialPath, paramName, value) {
 }
 
 // ── Material panel (loads UsdPreviewSurface params for selected prim) ─────
-async function loadMaterialPanel(primPath) {
+async function loadMaterialPanel(primPath, timeCode) {
   var matSection = document.getElementById('material-section');
   if (!matSection) {
     matSection = document.createElement('div');
@@ -1718,7 +1733,11 @@ async function loadMaterialPanel(primPath) {
   matSection.innerHTML = '';
 
   var key = primPath.replace(/^\//, '');
-  var mat = await api('/api/material/' + key);
+  var matUrl = '/api/material/' + key;
+  if (Number.isFinite(Number(timeCode))) {
+    matUrl += '?time=' + encodeURIComponent(Number(timeCode));
+  }
+  var mat = await api(matUrl);
   if (!mat.bound) return;
 
   var sec = document.createElement('div');
@@ -1895,6 +1914,31 @@ let _playing = false;
 const _scrub = document.getElementById('timeline-scrub');
 const _frameLabel = document.getElementById('timeline-frame');
 const _fpsInput = document.getElementById('timeline-fps');
+let _attrRefreshInFlight = false;
+let _lastAttrRefreshAt = 0;
+
+async function _refreshSelectedPrimAtTimelineTime(force) {
+  if (!_selectedPaths.length || typeof selectPrimByPath !== 'function') return;
+
+  var now = performance.now();
+  if (!force && (now - _lastAttrRefreshAt) < 200) return;
+  if (_attrRefreshInFlight) return;
+
+  var primPath = _selectedPaths[_selectedPaths.length - 1];
+  if (!primPath) return;
+
+  _lastAttrRefreshAt = now;
+  _attrRefreshInFlight = true;
+  try {
+    await selectPrimByPath(primPath, {
+      skipGizmo: true,
+      skipRowSync: true,
+      timeCode: Number(window._currentTimeCode),
+    });
+  } finally {
+    _attrRefreshInFlight = false;
+  }
+}
 
 function _setPlayButtonState(playing) {
   var btn = document.getElementById('timeline-play');
@@ -1917,6 +1961,7 @@ if (_scrub) {
       // Will be picked up by animation loop
       window._manualTimeCode = tc;
       window._currentTimeCode = tc;
+      _refreshSelectedPrimAtTimelineTime(true);
     }
   });
 }
@@ -1939,6 +1984,7 @@ function stepTimeline(dir) {
   if (_frameLabel) _frameLabel.textContent = window._formatTimeCode ? window._formatTimeCode(tc) : String(tc);
   window._manualTimeCode = tc;
   window._currentTimeCode = tc;
+  _refreshSelectedPrimAtTimelineTime(true);
 }
 
 function togglePlayback() {
@@ -1975,6 +2021,12 @@ window._onTimelineRangeChanged = function(range, currentTc) {
     _frameLabel.textContent = window._formatTimeCode ? window._formatTimeCode(Number(currentTc)) : String(currentTc);
   }
 };
+
+window._onTimeCodeChanged = function(tc, playing) {
+  if (Number.isFinite(Number(tc))) window._currentTimeCode = Number(tc);
+  _refreshSelectedPrimAtTimelineTime(!playing);
+};
+
 if (window._timelineRange) {
   window._onTimelineRangeChanged(window._timelineRange, window._currentTimeCode);
 }

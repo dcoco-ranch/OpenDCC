@@ -626,9 +626,13 @@ def _prim_to_dict(prim) -> dict:
     }
 
 
-def _attr_to_dict(attr) -> dict:
+def _attr_to_dict(attr, time: Optional[float] = None) -> dict:
     try:
-        val = str(attr.Get())
+        if time is not None:
+            from pxr import Usd
+            val = str(attr.Get(Usd.TimeCode(time)))
+        else:
+            val = str(attr.Get())
     except Exception:
         val = "<error>"
     return {
@@ -1180,7 +1184,7 @@ async def prims_list(path: str = "/"):
 
 
 @app.get("/api/prim/{prim_path:path}")
-async def prim_detail(prim_path: str):
+async def prim_detail(prim_path: str, time: Optional[float] = None):
     full_path = "/" + prim_path.lstrip("/")
 
     stage = _current_stage()
@@ -1191,7 +1195,8 @@ async def prim_detail(prim_path: str):
             raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
         return {
             **_prim_to_dict(prim),
-            "attributes": [_attr_to_dict(a) for a in prim.GetAttributes()],
+            "query_time": time,
+            "attributes": [_attr_to_dict(a, time=time) for a in prim.GetAttributes()],
         }
 
     # Stub fallback
@@ -1206,13 +1211,13 @@ async def prim_detail(prim_path: str):
             atype = left[0]  if len(left) > 1 else "token"
             attrs.append({"name": aname, "type": atype,
                            "value": parts[1], "variability": "varying"})
-    return {**d, "attributes": attrs}
+    return {**d, "query_time": time, "attributes": attrs}
 
 
 # ── Material info ─────────────────────────────────────────────────────────────
 
 @app.get("/api/material/{prim_path:path}")
-async def prim_material(prim_path: str):
+async def prim_material(prim_path: str, time: Optional[float] = None):
     """Get material binding and UsdPreviewSurface parameters for a prim."""
     full_path = "/" + prim_path.lstrip("/")
     stage = _current_stage()
@@ -1231,7 +1236,7 @@ async def prim_material(prim_path: str):
         return {"bound": False}
 
     mat_path = str(mat.GetPath())
-    result = {"bound": True, "materialPath": mat_path, "params": {}}
+    result = {"bound": True, "materialPath": mat_path, "query_time": time, "params": {}}
 
     # Find UsdPreviewSurface shader
     for shader_prim in Usd.PrimRange(mat.GetPrim()):
@@ -1242,10 +1247,11 @@ async def prim_material(prim_path: str):
         if shader_id != "UsdPreviewSurface":
             continue
 
+        tc = Usd.TimeCode(time) if time is not None else None
         for inp in shader.GetInputs():
             name = inp.GetBaseName()
             try:
-                val = inp.Get()
+                val = inp.Get(tc) if tc is not None else inp.Get()
                 result["params"][name] = str(val) if val is not None else None
             except Exception:
                 pass

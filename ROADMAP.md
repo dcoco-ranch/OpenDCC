@@ -121,7 +121,7 @@
 ### 5.1 — Timeline web (remplace les timeline Qt)
 - [x] Barre de timeline avec scrubbing (lecture du `startTimeCode` / `endTimeCode` depuis le stage)
 - [x] Play / Pause / Step forward / Step backward
-- [ ] Sync `_driver.SetTime(tc)` côté WASM et attributs time-sampled côté serveur
+- [x] Sync `_driver.SetTime(tc)` côté WASM et attributs time-sampled côté serveur
 - [x] FPS configurable
 
 ### 5.2 — Curve Editor web (remplace `opendcc.anim_engine.ui.graph_editor`)
