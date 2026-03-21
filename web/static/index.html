@@ -833,10 +833,14 @@ function animate() {
   _prevTime = now;
 
   if (_driver && _usdReady) {
-    _animTime += dt;
-    const tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
-    _driver.SetTime(tc);
-    _driver.Draw();
+    // Skip Hydra Draw while gizmo is dragging (it would overwrite the transform)
+    const gizmoBusy = window._gizmo && window._gizmo.dragging;
+    if (!gizmoBusy) {
+      _animTime += dt;
+      const tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
+      _driver.SetTime(tc);
+      _driver.Draw();
+    }
 
     // Frame the scene AFTER Draw() populates the Three.js scene graph.
     // Hydra WASM is async — meshes only appear in usdRoot after Draw().
@@ -938,6 +942,10 @@ function initViewportPicking() {
   });
 
   canvas.addEventListener('click', function(ev) {
+    // Skip picking if gizmo handle is being used
+    if (window._gizmo && window._gizmo.axis !== null) return;
+    if (window._gizmo && window._gizmo.dragging) return;
+
     if (Math.abs(ev.clientX - _downX) > 5 || Math.abs(ev.clientY - _downY) > 5) return;
 
     var rect = canvas.getBoundingClientRect();
