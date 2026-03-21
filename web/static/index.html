@@ -499,10 +499,9 @@ gizmo.setSize(0.8);
 gizmo.visible = false;
 scene.add(gizmo);
 
-// Disable orbit while dragging the gizmo
-gizmo.addEventListener('dragging-changed', (ev) => {
-  controls.enabled = !ev.value;
-});
+// Disable orbit while interacting with the gizmo
+gizmo.addEventListener('mouseDown', () => { controls.enabled = false; });
+gizmo.addEventListener('mouseUp', () => { controls.enabled = true; });
 
 // When gizmo finishes dragging, push the transform to the server
 gizmo.addEventListener('mouseUp', () => {
