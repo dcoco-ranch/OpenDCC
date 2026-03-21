@@ -828,7 +828,7 @@ function initViewportPicking() {
   var T = window.THREE || THREE;
   var raycaster = new T.Raycaster();
   var mouse = new T.Vector2();
-  var vp = document.getElementById('viewport');
+  var vp = document.getElementById('viewport-wrap');
   var _downX = 0, _downY = 0;
 
   vp.addEventListener('pointerdown', function(ev) {
