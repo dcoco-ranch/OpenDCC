@@ -761,7 +761,11 @@ async function loadStage(reframe = true) {
   }
   // For incremental reloads, keep the old scene visible until the new one is ready
   // Only clear for full reloads (reframe=true) to avoid flash
-  if (reframe) usdRoot.clear();
+  if (reframe) {
+    if (window._gizmo) window._gizmo.detach();
+    if (window._highlightObject) window._highlightObject(null);
+    usdRoot.clear();
+  }
 
   // Remove previous virtual file — try multiple cleanup approaches
   // for robustness (Emscripten FS can be finicky with open file handles)
@@ -802,6 +806,9 @@ async function loadStage(reframe = true) {
 
   // ── Step 3: open with HdWebSyncDriver ────────────────────────────────
   // Clear old scene graph right before rebuilding (minimizes blank frame)
+  // Detach gizmo first — attached mesh is about to be destroyed
+  if (window._gizmo) window._gizmo.detach();
+  if (window._highlightObject) window._highlightObject(null);
   usdRoot.clear();
   const delegateConfig = { usdRoot, paths: [], driver: () => _driver };
   try {
@@ -985,7 +992,7 @@ function initViewportPicking() {
     _downY = ev.clientY;
   });
 
-  canvas.addEventListener('click', function(ev) {
+  canvas.addEventListener('click', async function(ev) {
     // Skip picking if gizmo handle is being used
     if (window._gizmo && window._gizmo.axis !== null) return;
     if (window._gizmo && window._gizmo.dragging) return;
@@ -1013,10 +1020,24 @@ function initViewportPicking() {
       while (obj && obj !== usdRoot) {
         if (obj.userData && obj.userData.path) { primPath = obj.userData.path; break; }
         if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
-        if (obj.name && obj.name.length > 0) { primPath = '/World/' + obj.name; break; }
+        if (obj.name && obj.name.length > 0) {
+          // Hydra delegate uses last path segment as mesh name.
+          // Try common parent paths, or search stage via API.
+          primPath = '/World/' + obj.name;
+          break;
+        }
         obj = obj.parent;
       }
       if (primPath) {
+        // If primPath is just a name (no /), resolve via API
+        if (!primPath.startsWith('/')) {
+          var resolved = await api('/api/prims/find?name=' + encodeURIComponent(primPath));
+          if (resolved.matches && resolved.matches.length > 0) {
+            primPath = resolved.matches[0];
+          } else {
+            primPath = '/World/' + primPath; // fallback
+          }
+        }
         console.log('[pick] selected:', primPath);
         _selectedPaths = [primPath];
         api('/api/selection', 'POST', { paths: _selectedPaths, replace: true });

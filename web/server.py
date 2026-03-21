@@ -933,6 +933,23 @@ async def stage_info():
     }
 
 
+# ── Find prim by name ─────────────────────────────────────────────────────────
+
+@app.get("/api/prims/find")
+async def prims_find(name: str):
+    """Find prim paths matching a given name (last path segment)."""
+    stage = _current_stage()
+    if stage:
+        matches = []
+        for prim in stage.TraverseAll():
+            if prim.GetName() == name:
+                matches.append(str(prim.GetPath()))
+        return {"matches": matches}
+    # Stub fallback
+    matches = [p for p in _stub_stage._prims if p.rsplit("/", 1)[-1] == name]
+    return {"matches": matches}
+
+
 # ── Prim tree ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/prims")
@@ -1489,6 +1506,9 @@ async def cmd_parent_prims(req: _ParentReq):
 
 @app.post("/api/undo")
 async def cmd_undo():
+    if _pxr_available and not _opendcc_available:
+        # pxr mode: no undo stack available (would need Sdf.ChangeBlock wrapping)
+        return {"ok": False, "error": "Undo not available in pxr mode (no undo stack)"}
     if not _opendcc_available:
         ok = _stub_stage.undo()
         if ok:
@@ -1501,6 +1521,8 @@ async def cmd_undo():
 
 @app.post("/api/redo")
 async def cmd_redo():
+    if _pxr_available and not _opendcc_available:
+        return {"ok": False, "error": "Redo not available in pxr mode (no undo stack)"}
     if not _opendcc_available:
         ok = _stub_stage.redo()
         if ok:
