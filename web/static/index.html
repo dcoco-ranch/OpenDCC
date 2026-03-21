@@ -819,40 +819,42 @@ function _scheduleViewportReload() {
 }
 
 // ── Viewport picking (click on 3D object → select prim) ──────────────────
-(function initViewportPicking() {
-  const raycaster = new THREE.Raycaster();
-  const mouse = new THREE.Vector2();
-  const vp = document.getElementById('viewport');
+function initViewportPicking() {
+  if (typeof THREE === 'undefined' && typeof window.THREE === 'undefined') {
+    // Module script hasn't run yet — retry shortly
+    setTimeout(initViewportPicking, 100);
+    return;
+  }
+  var T = window.THREE || THREE;
+  var raycaster = new T.Raycaster();
+  var mouse = new T.Vector2();
+  var vp = document.getElementById('viewport');
+  var _downX = 0, _downY = 0;
 
   vp.addEventListener('pointerdown', function(ev) {
-    // Only left-click, ignore if dragging (OrbitControls)
     if (ev.button !== 0) return;
-    ev._vpClickX = ev.clientX;
-    ev._vpClickY = ev.clientY;
+    _downX = ev.clientX;
+    _downY = ev.clientY;
   });
 
   vp.addEventListener('pointerup', function(ev) {
     if (ev.button !== 0) return;
-    // Ignore if mouse moved (orbit/pan)
-    const dx = ev.clientX - (ev._vpClickX || ev.clientX);
-    const dy = ev.clientY - (ev._vpClickY || ev.clientY);
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) return;
+    if (Math.abs(ev.clientX - _downX) > 3 || Math.abs(ev.clientY - _downY) > 3) return;
 
-    const rect = vp.getBoundingClientRect();
+    var rect = vp.getBoundingClientRect();
     mouse.x =  ((ev.clientX - rect.left) / rect.width)  * 2 - 1;
     mouse.y = -((ev.clientY - rect.top)  / rect.height) * 2 + 1;
 
-    const cam = window._threeCamera;
-    const usdRoot = window._usdRoot;
+    var cam = window._threeCamera;
+    var usdRoot = window._usdRoot;
     if (!cam || !usdRoot) return;
 
     raycaster.setFromCamera(mouse, cam);
-    const hits = raycaster.intersectObjects(usdRoot.children, true);
+    var hits = raycaster.intersectObjects(usdRoot.children, true);
 
     if (hits.length > 0) {
-      // Walk up to find the prim path (stored in userData by Hydra delegate)
-      let obj = hits[0].object;
-      let primPath = '';
+      var obj = hits[0].object;
+      var primPath = '';
       while (obj && obj !== usdRoot) {
         if (obj.userData && obj.userData.path) { primPath = obj.userData.path; break; }
         if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
@@ -873,7 +875,9 @@ function _scheduleViewportReload() {
     highlightSelectedRows();
     document.getElementById('prim-info').innerHTML = '<span style="color:var(--text2)">No selection</span>';
   });
-})();
+  console.log('[viewport] picking initialized');
+}
+initViewportPicking();
 
 function highlightSelectedRows() {
   document.querySelectorAll('.prim-row').forEach(function(r) {
