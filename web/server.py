@@ -981,6 +981,51 @@ async def prim_detail(prim_path: str):
     return {**d, "attributes": attrs}
 
 
+# ── Material info ─────────────────────────────────────────────────────────────
+
+@app.get("/api/prim/{prim_path:path}/material")
+async def prim_material(prim_path: str):
+    """Get material binding and UsdPreviewSurface parameters for a prim."""
+    full_path = "/" + prim_path.lstrip("/")
+    stage = _current_stage()
+    if not stage:
+        return {"bound": False}
+
+    from pxr import Sdf, UsdShade
+
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        return {"bound": False}
+
+    binding = UsdShade.MaterialBindingAPI(prim)
+    mat, _ = binding.ComputeBoundMaterial()
+    if not mat:
+        return {"bound": False}
+
+    mat_path = str(mat.GetPath())
+    result = {"bound": True, "materialPath": mat_path, "params": {}}
+
+    # Find UsdPreviewSurface shader
+    for shader_prim in mat.GetPrim().GetDescendants():
+        shader = UsdShade.Shader(shader_prim)
+        if not shader:
+            continue
+        shader_id = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
+        if shader_id != "UsdPreviewSurface":
+            continue
+
+        for inp in shader.GetInputs():
+            name = inp.GetBaseName()
+            try:
+                val = inp.Get()
+                result["params"][name] = str(val) if val is not None else None
+            except Exception:
+                pass
+        break
+
+    return result
+
+
 # ── Attribute editing ─────────────────────────────────────────────────────────
 
 class _AttrSetReq(BaseModel):

@@ -356,6 +356,7 @@
     <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
     <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
     <button onclick="toggleWireframe()" title="Toggle wireframe (Z)">◇ Wire</button>
+    <button onclick="toggleGrid()" title="Toggle grid/axes (G)">⊞ Grid</button>
     <button onclick="setViewPreset('front')" title="Front view (1)">F</button>
     <button onclick="setViewPreset('right')" title="Right view (3)">R</button>
     <button onclick="setViewPreset('top')" title="Top view (7)">T</button>
@@ -479,7 +480,17 @@ const usdRoot = new THREE.Group();
 usdRoot.name  = "USD Root";
 scene.add(usdRoot);
 
-scene.add(new THREE.GridHelper(20, 20, 0x444444, 0x333333));
+const _grid = new THREE.GridHelper(20, 20, 0x444444, 0x333333);
+scene.add(_grid);
+const _axes = new THREE.AxesHelper(3);
+_axes.position.set(0, 0.001, 0);
+scene.add(_axes);
+
+function toggleGrid() {
+  _grid.visible = !_grid.visible;
+  _axes.visible = !_axes.visible;
+}
+window.toggleGrid = toggleGrid;
 
 // ── Default lights (fallback when USD scene has no UsdLux lights) ─────────
 const _keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
@@ -677,6 +688,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'e' || e.key === 'E') { gizmo.setMode('rotate'); }
   if (e.key === 'r' || e.key === 'R') { gizmo.setMode('scale'); }
   if (e.key === 'z' || e.key === 'Z') { if (typeof toggleWireframe === 'function') toggleWireframe(); }
+  if (e.key === 'g' || e.key === 'G') { if (typeof toggleGrid === 'function') toggleGrid(); }
   if (e.key === '1') { if (typeof setViewPreset === 'function') setViewPreset('front'); }
   if (e.key === '3') { if (typeof setViewPreset === 'function') setViewPreset('right'); }
   if (e.key === '7') { if (typeof setViewPreset === 'function') setViewPreset('top'); }
@@ -1452,8 +1464,81 @@ async function selectPrimByPath(path) {
     body.appendChild(tbl); sec.appendChild(hdr); sec.appendChild(body);
     propsScroll.insertBefore(sec, attrTable);
   });
+
+  // Load material info if available
+  loadMaterialPanel(path);
 }
 window.selectPrimByPath = selectPrimByPath;
+
+// ── Material panel (loads UsdPreviewSurface params for selected prim) ─────
+async function loadMaterialPanel(primPath) {
+  var matSection = document.getElementById('material-section');
+  if (!matSection) {
+    matSection = document.createElement('div');
+    matSection.id = 'material-section';
+    document.getElementById('props-scroll').appendChild(matSection);
+  }
+  matSection.innerHTML = '';
+
+  var key = primPath.replace(/^\//, '');
+  var mat = await api('/api/prim/' + key + '/material');
+  if (!mat.bound) return;
+
+  var sec = document.createElement('div');
+  sec.className = 'attr-section';
+  var hdr = document.createElement('div');
+  hdr.className = 'attr-section-header';
+  hdr.innerHTML = '<span class="toggle">▾</span> Material <span style="color:var(--accent);font-size:10px;margin-left:auto">' + mat.materialPath + '</span>';
+  hdr.addEventListener('click', function() {
+    var b = sec.querySelector('.attr-section-body');
+    b.classList.toggle('collapsed');
+    hdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '▸' : '▾';
+  });
+
+  var body = document.createElement('div');
+  body.className = 'attr-section-body';
+  var tbl = document.createElement('table');
+  tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
+
+  var params = mat.params || {};
+  for (var name in params) {
+    var val = params[name];
+    var tr = document.createElement('tr');
+    var td1 = document.createElement('td');
+    td1.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a;color:var(--text2);width:38%';
+    td1.textContent = name;
+    var td2 = document.createElement('td');
+    td2.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a';
+
+    // Color swatch for color params
+    if (/[Cc]olor/.test(name) && val) {
+      try {
+        var nums = val.replace(/[^0-9.,\-\s]/g, '').split(/[,\s]+/).map(Number);
+        if (nums.length >= 3) {
+          var r = Math.round(nums[0]*255), g = Math.round(nums[1]*255), b = Math.round(nums[2]*255);
+          td2.innerHTML = '<span class="color-swatch" style="background:rgb('+r+','+g+','+b+')"></span>' + val;
+        } else { td2.textContent = val || '—'; }
+      } catch(e) { td2.textContent = val || '—'; }
+    } else if (/roughness|metallic|opacity|ior|clearcoat/.test(name) && val) {
+      var fval = parseFloat(val);
+      if (!isNaN(fval)) {
+        td2.innerHTML = '<input type="range" class="attr-slider" min="0" max="' +
+          (name === 'ior' ? '3' : '1') + '" step="0.01" value="' + fval +
+          '" disabled> <span>' + fval.toFixed(2) + '</span>';
+      } else { td2.textContent = val || '—'; }
+    } else {
+      td2.textContent = val || '—';
+    }
+
+    tr.append(td1, td2);
+    tbl.appendChild(tr);
+  }
+
+  body.appendChild(tbl);
+  sec.appendChild(hdr);
+  sec.appendChild(body);
+  matSection.appendChild(sec);
+}
 
 async function setAttr(primPath, attrName, value) {
   await api('/api/prim/' + primPath.replace(/^\//, ''), 'PATCH', { attribute: attrName, value: value });
@@ -1481,20 +1566,61 @@ function startAttrEdit(cell, primPath, attrName, attrType) {
 window.startAttrEdit = startAttrEdit;
 
 // ── Script editor ──────────────────────────────────────────────────────────
+const _scriptHistory = [];
+let _scriptHistIdx = -1;
+
 function toggleScript() {
   document.getElementById('script-panel').classList.toggle('open');
+  if (document.getElementById('script-panel').classList.contains('open')) {
+    document.getElementById('script-editor').focus();
+  }
 }
 function clearScript() {
   document.getElementById('script-editor').value = '';
-  document.getElementById('script-output').textContent = '';
+  document.getElementById('script-output').innerHTML = '';
 }
 async function runScript() {
-  const code = document.getElementById('script-editor').value;
-  const out  = document.getElementById('script-output');
-  out.textContent = 'Running…';
-  const res = await api('/api/execute', 'POST', { code });
-  out.textContent = (res.output || '') + (res.error ? '\n' + res.error : '');
+  const editor = document.getElementById('script-editor');
+  const code = editor.value;
+  if (!code.trim()) return;
+  const out = document.getElementById('script-output');
+  out.innerHTML += '<span style="color:#888">>>> ' + code.split('\n')[0] + (code.includes('\n') ? '...' : '') + '</span>\n';
+  out.innerHTML += '<span style="color:#666">Running…</span>\n';
   out.scrollTop = out.scrollHeight;
+
+  // Save to history
+  if (_scriptHistory[_scriptHistory.length - 1] !== code) {
+    _scriptHistory.push(code);
+    if (_scriptHistory.length > 50) _scriptHistory.shift();
+  }
+  _scriptHistIdx = _scriptHistory.length;
+
+  const res = await api('/api/execute', 'POST', { code });
+  // Remove "Running…" line
+  const lines = out.innerHTML.split('\n');
+  lines.pop(); lines.pop();
+  out.innerHTML = lines.join('\n') + '\n';
+
+  if (res.output) out.innerHTML += '<span style="color:#d4d4d4">' + res.output.replace(/</g, '&lt;') + '</span>';
+  if (res.error)  out.innerHTML += '<span style="color:#f44">' + res.error.replace(/</g, '&lt;') + '</span>';
+  if (res.ok && !res.output && !res.error) out.innerHTML += '<span style="color:#4c4">OK</span>\n';
+  out.scrollTop = out.scrollHeight;
+}
+
+// Ctrl+Enter to run, Up/Down for history
+document.getElementById('script-editor')?.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runScript(); }
+  if (e.key === 'ArrowUp' && e.ctrlKey && _scriptHistory.length > 0) {
+    e.preventDefault();
+    _scriptHistIdx = Math.max(0, _scriptHistIdx - 1);
+    this.value = _scriptHistory[_scriptHistIdx] || '';
+  }
+  if (e.key === 'ArrowDown' && e.ctrlKey) {
+    e.preventDefault();
+    _scriptHistIdx = Math.min(_scriptHistory.length, _scriptHistIdx + 1);
+    this.value = _scriptHistory[_scriptHistIdx] || '';
+  }
+});
 }
 window.toggleScript = toggleScript;
 window.clearScript  = clearScript;
