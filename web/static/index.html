@@ -495,36 +495,12 @@ controls.screenSpacePanning = true;
 
 // ── Transform Gizmo ──────────────────────────────────────────────────────
 const gizmo = new TransformControls(camera, renderer.domElement);
-gizmo.setSize(0.8);
-gizmo.setSpace('local');
-gizmo.visible = false;
-gizmo.enabled = true;
-scene.add(gizmo);
+gizmo.setSize(0.75);
+gizmo.space = 'world';
+scene.add(gizmo.getHelper());   // MUST use getHelper() per Three.js docs
 
-// Prevent OrbitControls from stealing events when hovering gizmo handles.
-// Disable orbit as soon as mouse hovers a handle, re-enable when away.
-renderer.domElement.addEventListener('pointermove', () => {
-  if (gizmo.visible && gizmo.axis !== null) {
-    controls.enabled = false;
-  } else if (!gizmo.dragging) {
-    controls.enabled = true;
-  }
-});
-
-// Also keep orbit disabled during entire drag
-gizmo.addEventListener('dragging-changed', (ev) => {
-  console.log('[gizmo] dragging-changed:', ev.value);
-  controls.enabled = !ev.value;
-});
-
-// Debug: log axis on hover
-let _lastAxis = null;
-renderer.domElement.addEventListener('pointermove', () => {
-  if (gizmo.axis !== _lastAxis) {
-    _lastAxis = gizmo.axis;
-    if (gizmo.axis) console.log('[gizmo] hovering axis:', gizmo.axis);
-  }
-});
+gizmo.addEventListener('mouseDown', () => { controls.enabled = false; });
+gizmo.addEventListener('mouseUp', () => { controls.enabled = true; });
 
 // Send transform to server when drag ends
 gizmo.addEventListener('mouseUp', () => {
@@ -560,19 +536,13 @@ gizmo.addEventListener('mouseUp', () => {
 });
 
 function attachGizmo(obj) {
-  if (!obj) { gizmo.detach(); gizmo.visible = false; return; }
+  if (!obj) { gizmo.detach(); return; }
+  // Hydra WASM delegate sets matrixAutoUpdate=false (controls matrix directly).
+  // TransformControls needs matrixAutoUpdate=true to work properly.
+  obj.matrixAutoUpdate = true;
+  obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
   gizmo.attach(obj);
-  gizmo.visible = true;
-  // Debug: log gizmo state
-  console.log('[gizmo] attach debug:',
-    'visible:', gizmo.visible,
-    'enabled:', gizmo.enabled,
-    'mode:', gizmo.mode,
-    'space:', gizmo.space,
-    'obj.pos:', obj.position?.toArray(),
-    'obj.parent:', obj.parent?.name,
-    'gizmo.children:', gizmo.children.length,
-    'gizmo in scene:', gizmo.parent?.type);
+  console.log('[gizmo] attached, pos:', obj.position.toArray(), 'matrixAutoUpdate:', obj.matrixAutoUpdate);
 }
 
 window._gizmo      = gizmo;
