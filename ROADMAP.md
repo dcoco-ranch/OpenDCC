@@ -33,8 +33,8 @@
 
 ---
 
-## Phase 2 — Outliner & Scene Graph Web avancé — 🔧 CODE PRÊT, EN ATTENTE DE VALIDATION
-**Tag : `milestone/v2.0-scene-graph`** — À poser après validation
+## Phase 2 — Outliner & Scene Graph Web avancé — ✅ VALIDÉ
+**Tag : `milestone/v2.0-scene-graph`**
 
 ### 2.1 — Outliner enrichi (remplace `opendcc.hydra_op.ui.scene_graph`)
 - [x] Drag & drop pour reparenting (appel `/api/prims/parent`)
@@ -52,11 +52,18 @@
 
 ### 2.3 — Create Menu (remplace `opendcc.usd_editor.common_cmds`)
 - [x] Toolbar "Create" : tous les types de prims (Mesh primitives, Lights, Camera, Xform, Scope)
+- [x] Create/Delete opèrent sur le pxr stage (pas seulement stub)
 - [x] Undo/Redo boutons + raccourcis clavier (Ctrl+Z, Ctrl+Shift+Z, Delete, Ctrl+D, Ctrl+G, H, F2)
 - [ ] API endpoint `/api/prims/create` étendu pour supporter les paramètres initiaux — déféré
 
-> **Status** : Code committed (b6ffe69). En attente de validation sur VM.
-> Docker rebuild requis avec `--no-cache` pour forcer le refresh des fichiers web/.
+### 2.4 — GPU Snapshot (bonus — résolu pendant Phase 2)
+- [x] EGL headless (NVIDIA platform device, GL 4.6 Compatibility profile)
+- [x] Subprocess isolé (`_render_worker.py`) — crash-safe
+- [x] Snapshot matches viewport camera (eye/target/fov from Three.js)
+- [x] Z-up / Y-up auto-detection
+- [x] Auto dome light (intensity 0.35) quand scène sans lumières
+- [x] `/health` → `snapshot_available` basé sur vrai test render subprocess
+- [x] RTX 5090 / NVIDIA 595.45 / USD 24.11 validé
 
 ---
 

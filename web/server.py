@@ -1237,6 +1237,44 @@ async def cmd_group_prims(req: _GroupReq):
     return {"ok": True}
 
 
+# ── Transform prim (from gizmo) ───────────────────────────────────────────────
+
+class _XformReq(BaseModel):
+    path:      str
+    translate: Optional[List[float]] = None
+    rotate:    Optional[List[float]] = None   # degrees (XYZ euler)
+    scale:     Optional[List[float]] = None
+
+
+@app.post("/api/prims/xform")
+async def cmd_xform_prim(req: _XformReq):
+    """Apply translate/rotate/scale to a prim's xformOps."""
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdGeom, Gf
+
+    prim = stage.GetPrimAtPath(Sdf.Path(req.path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {req.path}")
+
+    xformable = UsdGeom.Xformable(prim)
+
+    # Clear existing xform ops and set fresh TRS
+    xformable.ClearXformOpOrder()
+
+    if req.translate:
+        xformable.AddTranslateOp().Set(Gf.Vec3d(*req.translate))
+    if req.rotate:
+        xformable.AddRotateXYZOp().Set(Gf.Vec3f(*req.rotate))
+    if req.scale and req.scale != [1, 1, 1]:
+        xformable.AddScaleOp().Set(Gf.Vec3f(*req.scale))
+
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True, "path": req.path}
+
+
 # ── Rename prim ───────────────────────────────────────────────────────────────
 
 class _RenameReq(BaseModel):

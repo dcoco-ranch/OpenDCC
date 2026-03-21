@@ -444,6 +444,7 @@
 <script type="module">
 import * as THREE       from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 // USD WASM: side-effect import registers globalThis["NEEDLE:USD:GET"]
 import '/usd/bindings/emHdBindings.js';
@@ -491,6 +492,69 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping      = true;
 controls.dampingFactor      = 0.08;
 controls.screenSpacePanning = true;
+
+// ── Transform Gizmo ──────────────────────────────────────────────────────
+const gizmo = new TransformControls(camera, renderer.domElement);
+gizmo.setSize(0.8);
+gizmo.visible = false;
+scene.add(gizmo);
+
+// Disable orbit while dragging the gizmo
+gizmo.addEventListener('dragging-changed', (ev) => {
+  controls.enabled = !ev.value;
+});
+
+// When gizmo finishes dragging, push the transform to the server
+gizmo.addEventListener('mouseUp', () => {
+  const obj = gizmo.object;
+  if (!obj || !obj._primPath) return;
+
+  const pos = obj.position;
+  const rot = obj.rotation;  // Euler (radians)
+  const scl = obj.scale;
+
+  // If usdRoot has rotation (Z-up → Y-up), transform back
+  const usdR = usdRoot.rotation.x;
+  let px = pos.x, py = pos.y, pz = pos.z;
+  let rx = THREE.MathUtils.radToDeg(rot.x);
+  let ry = THREE.MathUtils.radToDeg(rot.y);
+  let rz = THREE.MathUtils.radToDeg(rot.z);
+
+  if (Math.abs(usdR + Math.PI / 2) < 0.01) {
+    // Undo Rx(-90°): (x,y,z) → (x,-z,y)
+    [px, py, pz] = [pos.x, -pos.z, pos.y];
+  }
+
+  // Send xform to server
+  const body = {
+    path: obj._primPath,
+    translate: [px, py, pz],
+    rotate:    [rx, ry, rz],
+    scale:     [scl.x, scl.y, scl.z],
+  };
+  fetch('/api/prims/xform', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => {
+    if (r.ok) window.setStatus?.('Transform applied');
+    else window.setStatus?.('Transform failed', true);
+  });
+});
+
+// Attach gizmo to an object (called from picking / outliner selection)
+function attachGizmo(obj) {
+  if (!obj) {
+    gizmo.detach();
+    gizmo.visible = false;
+    return;
+  }
+  gizmo.attach(obj);
+  gizmo.visible = true;
+}
+
+window._gizmo      = gizmo;
+window._attachGizmo = attachGizmo;
 
 // ── Resize ────────────────────────────────────────────────────────────────
 function resizeViewport() {
@@ -559,7 +623,12 @@ window.frameAll = function () {
 };
 
 document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'f' || e.key === 'F') window.frameAll();
+  // Gizmo mode shortcuts
+  if (e.key === 'w' || e.key === 'W') { gizmo.setMode('translate'); }
+  if (e.key === 'e' || e.key === 'E') { gizmo.setMode('rotate'); }
+  if (e.key === 'r' || e.key === 'R') { gizmo.setMode('scale'); }
 });
 
 // ── USD state ─────────────────────────────────────────────────────────────
@@ -866,13 +935,18 @@ function initViewportPicking() {
         highlightSelectedRows();
         selectPrimByPath(primPath);
         setStatus('Selected: ' + primPath);
+        // Attach gizmo to the clicked mesh
+        var meshObj = hits[0].object;
+        meshObj._primPath = primPath;
+        if (window._attachGizmo) window._attachGizmo(meshObj);
         return;
       }
     }
-    // Clicked empty space → deselect
+    // Clicked empty space → deselect + detach gizmo
     _selectedPaths = [];
     api('/api/selection', 'POST', { paths: [], replace: true });
     highlightSelectedRows();
+    if (window._attachGizmo) window._attachGizmo(null);
     document.getElementById('prim-info').innerHTML = '<span style="color:var(--text2)">No selection</span>';
   });
   console.log('[viewport] picking initialized');
