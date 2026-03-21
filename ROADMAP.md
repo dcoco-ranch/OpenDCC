@@ -125,7 +125,7 @@
 - [x] FPS configurable
 
 ### 5.2 — Curve Editor web (remplace `opendcc.anim_engine.ui.graph_editor`)
-- [ ] Canvas 2D pour afficher les courbes d'animation (AnimX ou time-sampled attributes)
+- [x] Canvas 2D pour afficher les courbes d'animation (preview time-sampled attributes)
 - [ ] Édition de keyframes : ajout, suppression, déplacement
 - [ ] Types d'interpolation : linear, bezier, step
 

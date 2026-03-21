@@ -1214,6 +1214,61 @@ async def prim_detail(prim_path: str, time: Optional[float] = None):
     return {**d, "query_time": time, "attributes": attrs}
 
 
+# ── Prim time samples (Curve Editor support) ──────────────────────────────────
+
+@app.get("/api/prim_samples/{prim_path:path}")
+async def prim_time_samples(prim_path: str, max_samples: int = 400):
+    full_path = "/" + prim_path.lstrip("/")
+
+    stage = _current_stage()
+    if stage:
+        from pxr import Sdf, Usd
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+        max_samples = max(1, min(int(max_samples), 2000))
+        animated = []
+
+        for attr in prim.GetAttributes():
+            try:
+                times = list(attr.GetTimeSamples() or [])
+            except Exception:
+                times = []
+
+            if not times:
+                continue
+
+            samples = []
+            for t in times[:max_samples]:
+                try:
+                    v = attr.Get(Usd.TimeCode(t))
+                    samples.append({
+                        "time": float(t),
+                        "value": str(v) if v is not None else None,
+                    })
+                except Exception:
+                    samples.append({"time": float(t), "value": "<error>"})
+
+            animated.append({
+                "name": attr.GetName(),
+                "type": str(attr.GetTypeName()),
+                "sample_count": len(times),
+                "samples": samples,
+            })
+
+        return {
+            "path": full_path,
+            "count": len(animated),
+            "start_time_code": stage.GetStartTimeCode(),
+            "end_time_code": stage.GetEndTimeCode(),
+            "time_codes_per_second": stage.GetTimeCodesPerSecond(),
+            "animated": animated,
+        }
+
+    return {"path": full_path, "count": 0, "animated": []}
+
+
 # ── Material info ─────────────────────────────────────────────────────────────
 
 @app.get("/api/material/{prim_path:path}")

@@ -1711,8 +1711,9 @@ async function selectPrimByPath(path, opts) {
     propsScroll.insertBefore(sec, attrTable);
   });
 
-  // Load material info if available
-  loadMaterialPanel(path, tc);
+  // Load extra panels if available
+  if (!opts.skipMaterial) loadMaterialPanel(path, tc);
+  if (!opts.skipCurve) loadCurvePanel(path, tc);
 }
 window.selectPrimByPath = selectPrimByPath;
 
@@ -1797,6 +1798,182 @@ async function loadMaterialPanel(primPath, timeCode) {
   sec.appendChild(hdr);
   sec.appendChild(body);
   matSection.appendChild(sec);
+}
+
+// ── Curve editor (preview) ───────────────────────────────────────────────
+let _curveState = {
+  primPath: '',
+  attrs: [],
+  selectedAttr: '',
+  currentTime: 0,
+};
+
+function _curveEsc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function _curveToNumber(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  if (Array.isArray(v)) {
+    for (var i = 0; i < v.length; i++) {
+      var n = _curveToNumber(v[i]);
+      if (Number.isFinite(n)) return n;
+    }
+    return NaN;
+  }
+  if (v == null) return NaN;
+  var s = String(v);
+  var m = s.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/);
+  return m ? Number(m[0]) : NaN;
+}
+
+function _ensureCurveSection() {
+  var sec = document.getElementById('curve-section');
+  if (!sec) {
+    sec = document.createElement('div');
+    sec.id = 'curve-section';
+    document.getElementById('props-scroll').appendChild(sec);
+  }
+  return sec;
+}
+
+function _renderCurveFromState(timeCode) {
+  var svg = document.getElementById('curve-svg');
+  if (!svg) return;
+
+  var attr = null;
+  for (var i = 0; i < _curveState.attrs.length; i++) {
+    if (_curveState.attrs[i].name === _curveState.selectedAttr) {
+      attr = _curveState.attrs[i];
+      break;
+    }
+  }
+  if (!attr) {
+    svg.innerHTML = '<text x="8" y="20" fill="#999" font-size="11">No curve selected</text>';
+    return;
+  }
+
+  var numeric = [];
+  (attr.samples || []).forEach(function(s) {
+    var t = Number(s.time);
+    var v = _curveToNumber(s.value);
+    if (Number.isFinite(t) && Number.isFinite(v)) numeric.push({ time: t, value: v });
+  });
+
+  if (!numeric.length) {
+    svg.innerHTML = '<text x="8" y="20" fill="#999" font-size="11">No numeric samples for ' + _curveEsc(attr.name) + '</text>';
+    return;
+  }
+
+  var w = Math.max(160, svg.clientWidth || 240);
+  var h = 120;
+  var pad = 18;
+  var tMin = Math.min.apply(null, numeric.map(function(s) { return s.time; }));
+  var tMax = Math.max.apply(null, numeric.map(function(s) { return s.time; }));
+  var vMin = Math.min.apply(null, numeric.map(function(s) { return s.value; }));
+  var vMax = Math.max.apply(null, numeric.map(function(s) { return s.value; }));
+  if (Math.abs(tMax - tMin) < 1e-6) tMax = tMin + 1;
+  if (Math.abs(vMax - vMin) < 1e-9) { vMin -= 1; vMax += 1; }
+
+  function sx(t) { return pad + ((t - tMin) / (tMax - tMin)) * (w - pad * 2); }
+  function sy(v) { return (h - pad) - ((v - vMin) / (vMax - vMin)) * (h - pad * 2); }
+
+  var points = numeric.map(function(s) { return sx(s.time).toFixed(2) + ',' + sy(s.value).toFixed(2); }).join(' ');
+  var circles = numeric.map(function(s) {
+    return '<circle cx="' + sx(s.time).toFixed(2) + '" cy="' + sy(s.value).toFixed(2) + '" r="2.5" fill="#5a8fc2" />';
+  }).join('');
+
+  var tc = Number(timeCode);
+  var currentLine = '';
+  if (Number.isFinite(tc)) {
+    var x = sx(Math.min(tMax, Math.max(tMin, tc)));
+    currentLine = '<line x1="' + x.toFixed(2) + '" y1="' + pad + '" x2="' + x.toFixed(2) + '" y2="' + (h - pad) + '" stroke="#c2a45a" stroke-width="1" />';
+  }
+
+  svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+  svg.innerHTML = ''
+    + '<rect x="0" y="0" width="' + w + '" height="' + h + '" fill="#1d1d1d" stroke="#3a3a3a" />'
+    + '<line x1="' + pad + '" y1="' + (h - pad) + '" x2="' + (w - pad) + '" y2="' + (h - pad) + '" stroke="#555" />'
+    + '<line x1="' + pad + '" y1="' + pad + '" x2="' + pad + '" y2="' + (h - pad) + '" stroke="#555" />'
+    + currentLine
+    + '<polyline points="' + points + '" fill="none" stroke="#8ec3ff" stroke-width="1.5" />'
+    + circles
+    + '<text x="6" y="12" fill="#aaa" font-size="10">' + _curveEsc(attr.name) + ' (' + numeric.length + ' keys)</text>'
+    + '<text x="6" y="' + (h - 4) + '" fill="#777" font-size="9">t:[' + tMin.toFixed(2) + ',' + tMax.toFixed(2) + ']  v:[' + vMin.toFixed(3) + ',' + vMax.toFixed(3) + ']</text>';
+}
+
+async function loadCurvePanel(primPath, timeCode) {
+  var curveSection = _ensureCurveSection();
+  curveSection.innerHTML = '<div class="attr-section"><div class="attr-section-header"><span class="toggle">▾</span> Curve Editor <span style="color:var(--text2);font-size:10px;margin-left:auto">loading…</span></div></div>';
+
+  var key = primPath.replace(/^\//, '');
+  var data = await api('/api/prim_samples/' + key + '?max_samples=500');
+
+  var animated = (data && data.animated) ? data.animated : [];
+  _curveState.primPath = primPath;
+  _curveState.attrs = animated;
+  _curveState.currentTime = Number(timeCode);
+
+  if (!animated.length) {
+    curveSection.innerHTML = '<div class="attr-section"><div class="attr-section-header"><span class="toggle">▾</span> Curve Editor <span style="color:var(--text2);font-size:10px;margin-left:auto">0 animated</span></div><div class="attr-section-body" style="padding:6px 8px;color:var(--text2)">No animated attributes on this prim.</div></div>';
+    return;
+  }
+
+  if (!animated.some(function(a) { return a.name === _curveState.selectedAttr; })) {
+    _curveState.selectedAttr = animated[0].name;
+  }
+
+  var sec = document.createElement('div');
+  sec.className = 'attr-section';
+  var hdr = document.createElement('div');
+  hdr.className = 'attr-section-header';
+  hdr.innerHTML = '<span class="toggle">▾</span> Curve Editor <span style="color:var(--text2);font-size:10px;margin-left:auto">' + animated.length + ' animated</span>';
+  hdr.addEventListener('click', function() {
+    var b = sec.querySelector('.attr-section-body');
+    b.classList.toggle('collapsed');
+    hdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '▸' : '▾';
+  });
+
+  var body = document.createElement('div');
+  body.className = 'attr-section-body';
+  body.style.padding = '6px 8px';
+
+  var select = document.createElement('select');
+  select.id = 'curve-attr-select';
+  select.style.cssText = 'width:100%;margin-bottom:6px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:11px;padding:2px 4px;border-radius:3px;';
+  animated.forEach(function(a) {
+    var opt = document.createElement('option');
+    opt.value = a.name;
+    opt.textContent = a.name + '  [' + a.sample_count + ']';
+    select.appendChild(opt);
+  });
+  select.value = _curveState.selectedAttr;
+  select.addEventListener('change', function() {
+    _curveState.selectedAttr = this.value;
+    _renderCurveFromState(_curveState.currentTime);
+  });
+
+  var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('id', 'curve-svg');
+  svg.style.width = '100%';
+  svg.style.height = '120px';
+  svg.style.display = 'block';
+  svg.style.border = '1px solid #3a3a3a';
+  svg.style.borderRadius = '3px';
+  svg.style.background = '#1d1d1d';
+
+  body.appendChild(select);
+  body.appendChild(svg);
+  sec.appendChild(hdr);
+  sec.appendChild(body);
+  curveSection.innerHTML = '';
+  curveSection.appendChild(sec);
+
+  _renderCurveFromState(timeCode);
 }
 
 async function setAttr(primPath, attrName, value) {
@@ -1933,6 +2110,8 @@ async function _refreshSelectedPrimAtTimelineTime(force) {
     await selectPrimByPath(primPath, {
       skipGizmo: true,
       skipRowSync: true,
+      skipMaterial: true,
+      skipCurve: true,
       timeCode: Number(window._currentTimeCode),
     });
   } finally {
@@ -2023,7 +2202,11 @@ window._onTimelineRangeChanged = function(range, currentTc) {
 };
 
 window._onTimeCodeChanged = function(tc, playing) {
-  if (Number.isFinite(Number(tc))) window._currentTimeCode = Number(tc);
+  if (Number.isFinite(Number(tc))) {
+    window._currentTimeCode = Number(tc);
+    _curveState.currentTime = Number(tc);
+    _renderCurveFromState(_curveState.currentTime);
+  }
   _refreshSelectedPrimAtTimelineTime(!playing);
 };
 
