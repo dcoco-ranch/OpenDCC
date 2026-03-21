@@ -885,61 +885,69 @@ function _scheduleViewportReload() {
 // ── Viewport picking (click on 3D object → select prim) ──────────────────
 function initViewportPicking() {
   if (typeof THREE === 'undefined' && typeof window.THREE === 'undefined') {
-    // Module script hasn't run yet — retry shortly
     setTimeout(initViewportPicking, 100);
     return;
   }
   var T = window.THREE || THREE;
   var raycaster = new T.Raycaster();
   var mouse = new T.Vector2();
-  var vp = document.getElementById('viewport-wrap');
+
+  // Use canvas directly — avoids event conflicts with TransformControls
+  var canvas = document.querySelector('#viewport-wrap canvas');
+  if (!canvas) {
+    console.warn('[pick] canvas not found yet, retrying...');
+    setTimeout(initViewportPicking, 500);
+    return;
+  }
+
   var _downX = 0, _downY = 0;
 
-  vp.addEventListener('pointerdown', function(ev) {
+  canvas.addEventListener('pointerdown', function(ev) {
     if (ev.button !== 0) return;
     _downX = ev.clientX;
     _downY = ev.clientY;
   });
 
-  vp.addEventListener('pointerup', function(ev) {
-    if (ev.button !== 0) return;
-    if (Math.abs(ev.clientX - _downX) > 3 || Math.abs(ev.clientY - _downY) > 3) return;
+  canvas.addEventListener('click', function(ev) {
+    if (Math.abs(ev.clientX - _downX) > 5 || Math.abs(ev.clientY - _downY) > 5) return;
 
-    var rect = vp.getBoundingClientRect();
+    var rect = canvas.getBoundingClientRect();
     mouse.x =  ((ev.clientX - rect.left) / rect.width)  * 2 - 1;
     mouse.y = -((ev.clientY - rect.top)  / rect.height) * 2 + 1;
 
     var cam = window._threeCamera;
     var usdRoot = window._usdRoot;
-    if (!cam || !usdRoot) return;
+    if (!cam || !usdRoot) { console.log('[pick] no cam/root'); return; }
 
     raycaster.setFromCamera(mouse, cam);
     var hits = raycaster.intersectObjects(usdRoot.children, true);
+    console.log('[pick] click at', mouse.x.toFixed(2), mouse.y.toFixed(2),
+                '→ hits:', hits.length);
 
     if (hits.length > 0) {
       var obj = hits[0].object;
       var primPath = '';
-      // Debug: log what the hit object looks like
-      console.log('[pick] hit:', obj.name, obj.type, 'userData:', obj.userData,
+      console.log('[pick] hit:', obj.name, obj.type, 'userData:', JSON.stringify(obj.userData),
                   'parent:', obj.parent?.name);
       while (obj && obj !== usdRoot) {
         if (obj.userData && obj.userData.path) { primPath = obj.userData.path; break; }
         if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
-        // Also try matching by name (Hydra delegate may use short names)
         if (obj.name && obj.name.length > 0) { primPath = '/World/' + obj.name; break; }
         obj = obj.parent;
       }
       if (primPath) {
+        console.log('[pick] selected:', primPath);
         _selectedPaths = [primPath];
         api('/api/selection', 'POST', { paths: _selectedPaths, replace: true });
         highlightSelectedRows();
         selectPrimByPath(primPath);
         setStatus('Selected: ' + primPath);
-        // Attach gizmo to the clicked mesh
         var meshObj = hits[0].object;
         meshObj._primPath = primPath;
         if (window._attachGizmo) window._attachGizmo(meshObj);
         return;
+      } else {
+        console.log('[pick] hit object but no prim path found');
       }
     }
     // Clicked empty space → deselect + detach gizmo
@@ -949,7 +957,7 @@ function initViewportPicking() {
     if (window._attachGizmo) window._attachGizmo(null);
     document.getElementById('prim-info').innerHTML = '<span style="color:var(--text2)">No selection</span>';
   });
-  console.log('[viewport] picking initialized');
+  console.log('[viewport] picking initialized on canvas');
 }
 initViewportPicking();
 
