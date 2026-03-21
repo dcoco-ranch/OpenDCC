@@ -496,18 +496,25 @@ controls.screenSpacePanning = true;
 // ── Transform Gizmo ──────────────────────────────────────────────────────
 const gizmo = new TransformControls(camera, renderer.domElement);
 gizmo.setSize(0.8);
-gizmo.setSpace('world');
+gizmo.setSpace('local');
 gizmo.visible = false;
+gizmo.enabled = true;
 scene.add(gizmo);
 
-// mouseDown/mouseUp = what worked before ("trop bien le gizmo")
-gizmo.addEventListener('mouseDown', () => {
-  controls.enabled = false;
-});
-gizmo.addEventListener('mouseUp', () => {
-  controls.enabled = true;
+// Prevent OrbitControls from stealing events when hovering gizmo handles.
+// TransformControls sets gizmo.axis when a handle is hovered/active.
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (gizmo.axis !== null) {
+    controls.enabled = false;
+  }
+}, true);  // capture phase — fires BEFORE OrbitControls
 
-  // Send transform to server
+renderer.domElement.addEventListener('pointerup', () => {
+  controls.enabled = true;
+}, true);
+
+// Send transform to server when drag ends
+gizmo.addEventListener('mouseUp', () => {
   const obj = gizmo.object;
   if (!obj || !obj._primPath) return;
 
@@ -520,7 +527,6 @@ gizmo.addEventListener('mouseUp', () => {
   const rot = obj.rotation;
   const scl = obj.scale;
 
-  // Suppress viewport reload for 2s (gizmo already shows correct position)
   window._gizmoJustDragged = true;
   setTimeout(() => { window._gizmoJustDragged = false; }, 2000);
 
