@@ -846,7 +846,7 @@ async function loadStage(reframe = true) {
 
     if (!_pendingFrame && reframe) _pendingFrame = true;
 
-    setStatus("Stage loaded.");
+    if (window.setStatus) window.setStatus("Stage loaded.");
     _loading = false;
     if (typeof refreshPrims === 'function') refreshPrims();
   } catch (err) {
@@ -1621,7 +1621,7 @@ document.getElementById('script-editor')?.addEventListener('keydown', function(e
     this.value = _scriptHistory[_scriptHistIdx] || '';
   }
 });
-}
+
 window.toggleScript = toggleScript;
 window.clearScript  = clearScript;
 window.runScript    = runScript;
