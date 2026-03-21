@@ -496,91 +496,55 @@ controls.screenSpacePanning = true;
 // ── Transform Gizmo ──────────────────────────────────────────────────────
 const gizmo = new TransformControls(camera, renderer.domElement);
 gizmo.setSize(0.8);
-gizmo.setSpace('world');   // World space — avoids usdRoot rotation issues
+gizmo.setSpace('world');
 gizmo.visible = false;
 scene.add(gizmo);
 
-let _gizmoDragging = false;
-let _gizmoSuppressReload = false;
+// Single dragging-changed handler — this is the standard Three.js pattern
+gizmo.addEventListener('dragging-changed', (ev) => {
+  controls.enabled = !ev.value;
+  // When drag ends (ev.value === false), send transform to server
+  if (!ev.value) {
+    const obj = gizmo.object;
+    if (!obj || !obj._primPath) return;
 
-// Disable orbit while interacting with the gizmo
-gizmo.addEventListener('mouseDown', () => {
-  controls.enabled = false;
-  _gizmoDragging = true;
-});
-gizmo.addEventListener('mouseUp', () => {
-  _gizmoDragging = false;
-  // Re-enable orbit after a short delay (avoids immediate orbit jump)
-  setTimeout(() => { controls.enabled = true; }, 50);
-});
+    const usdR = usdRoot.rotation.x;
+    let px = obj.position.x, py = obj.position.y, pz = obj.position.z;
+    if (Math.abs(usdR + Math.PI / 2) < 0.01) {
+      [px, py, pz] = [obj.position.x, -obj.position.z, obj.position.y];
+    }
 
-// When gizmo finishes dragging, push the transform to the server
-gizmo.addEventListener('mouseUp', () => {
-  const obj = gizmo.object;
-  if (!obj || !obj._primPath) return;
+    const rot = obj.rotation;
+    const scl = obj.scale;
+    window._gizmoJustDragged = true;
+    setTimeout(() => { window._gizmoJustDragged = false; }, 2000);
 
-  // Read position from the object (in world space under usdRoot)
-  const worldPos = new THREE.Vector3();
-  obj.getWorldPosition(worldPos);
-
-  // Convert from Three.js world to USD stage coords
-  const usdR = usdRoot.rotation.x;
-  let px = obj.position.x, py = obj.position.y, pz = obj.position.z;
-
-  // If usdRoot has Rx(-90°) (Z-up stage), undo it for USD coords
-  if (Math.abs(usdR + Math.PI / 2) < 0.01) {
-    // Three.js (Y-up) → USD (Z-up): (x,y,z) → (x, -z, y)
-    [px, py, pz] = [obj.position.x, -obj.position.z, obj.position.y];
+    fetch('/api/prims/xform', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: obj._primPath,
+        translate: [px, py, pz],
+        rotate: [THREE.MathUtils.radToDeg(rot.x),
+                 THREE.MathUtils.radToDeg(rot.y),
+                 THREE.MathUtils.radToDeg(rot.z)],
+        scale: [scl.x, scl.y, scl.z],
+      }),
+    }).then(r => {
+      if (r.ok) window.setStatus?.('Transform applied');
+    });
   }
-
-  const rot = obj.rotation;  // Euler (radians)
-  const scl = obj.scale;
-
-  const body = {
-    path: obj._primPath,
-    translate: [px, py, pz],
-    rotate:    [THREE.MathUtils.radToDeg(rot.x),
-                THREE.MathUtils.radToDeg(rot.y),
-                THREE.MathUtils.radToDeg(rot.z)],
-    scale:     [scl.x, scl.y, scl.z],
-  };
-
-  // Suppress the viewport reload triggered by scene_changed
-  // (the gizmo already shows the correct visual position)
-  _gizmoSuppressReload = true;
-  setTimeout(() => { _gizmoSuppressReload = false; }, 2000);
-
-  fetch('/api/prims/xform', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(r => {
-    if (r.ok) window.setStatus?.('Transform applied');
-    else window.setStatus?.('Transform failed', true);
-  });
 });
 
-// Attach gizmo to an object (called from picking / outliner selection)
 function attachGizmo(obj) {
-  if (!obj) {
-    gizmo.detach();
-    gizmo.visible = false;
-    return;
-  }
+  if (!obj) { gizmo.detach(); gizmo.visible = false; return; }
   gizmo.attach(obj);
   gizmo.visible = true;
 }
 
 window._gizmo      = gizmo;
 window._attachGizmo = attachGizmo;
-window._isGizmoDragging = () => _gizmoDragging;
-window._gizmoSuppressReload = false;
-
-// Keep window flag in sync
-Object.defineProperty(window, '_gizmoSuppressReload', {
-  get() { return _gizmoSuppressReload; },
-  set(v) { _gizmoSuppressReload = v; },
-});
+window._gizmoJustDragged = false;
 
 // ── Resize ────────────────────────────────────────────────────────────────
 function resizeViewport() {
@@ -906,12 +870,7 @@ async function api(url, method = 'GET', body = null) {
 // Outliner refreshes instantly; viewport catches up after 600ms of calm.
 let _vpReloadTimer = null;
 function _scheduleViewportReload() {
-  // Skip viewport reload if gizmo just applied a transform
-  // (the Three.js scene already shows the correct position)
-  if (window._gizmoSuppressReload || (typeof _gizmoSuppressReload !== 'undefined' && _gizmoSuppressReload)) {
-    console.log('[viewport] reload suppressed (gizmo transform)');
-    return;
-  }
+  if (window._gizmoJustDragged) return;  // skip reload after gizmo transform
   if (_vpReloadTimer) clearTimeout(_vpReloadTimer);
   _vpReloadTimer = setTimeout(function() {
     _vpReloadTimer = null;
