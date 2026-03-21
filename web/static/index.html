@@ -569,22 +569,6 @@ function attachGizmo(obj) {
   }
   obj.matrixAutoUpdate = true;
   obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
-  
-  // For Hydra meshes, vertices may be in world space with position at origin.
-  // Reposition the object's origin to its bbox center for proper gizmo placement.
-  if (obj.geometry) {
-    obj.geometry.computeBoundingBox();
-    const bbox = obj.geometry.boundingBox;
-    if (bbox && !bbox.isEmpty()) {
-      const center = new THREE.Vector3();
-      bbox.getCenter(center);
-      // Only adjust if position is near origin (Hydra baked transforms)
-      if (obj.position.length() < 0.01) {
-        obj.position.copy(center);
-      }
-    }
-  }
-  
   gizmo.attach(obj);
   if (window._highlightObject) window._highlightObject(obj);
 }
