@@ -429,10 +429,16 @@
     <span id="ws-label">Connecting…</span>
     <span style="width:1px;height:12px;background:var(--border);margin:0 8px"></span>
     <span style="font-size:10px;color:var(--text2)">Frame:</span>
+    <button id="timeline-step-back" onclick="stepTimeline(-1)" style="font-size:10px;padding:1px 5px" title="Step backward">◀|</button>
     <input type="range" id="timeline-scrub" min="0" max="100" value="0" step="1"
       style="width:120px;height:14px;cursor:pointer" title="Timeline scrubber">
-    <span id="timeline-frame" style="font-size:10px;color:var(--text2);min-width:30px">0</span>
+    <button id="timeline-step-forward" onclick="stepTimeline(1)" style="font-size:10px;padding:1px 5px" title="Step forward">|▶</button>
+    <span id="timeline-frame" style="font-size:10px;color:var(--text2);min-width:42px">0</span>
     <button id="timeline-play" onclick="togglePlayback()" style="font-size:10px;padding:1px 6px" title="Play/Pause">▶</button>
+    <span style="font-size:10px;color:var(--text2)">FPS:</span>
+    <input id="timeline-fps" type="number" min="1" max="240" step="1" value="24"
+      style="width:52px;height:18px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:10px;padding:0 4px"
+      title="Timeline FPS">
     <span style="flex:1"></span>
     <span id="vp-stats" style="color:var(--text2)"></span>
     <span id="status-msg"></span>
@@ -760,6 +766,26 @@ function _applyTimelineRange(startTc, endTc, tps, preserveCurrent = true) {
     end: _endTimeCode,
     fps: _timeCodesPerSecond,
   };
+  window._currentTimeCode = _currentTimeCode;
+
+  if (typeof window._onTimelineRangeChanged === 'function') {
+    window._onTimelineRangeChanged(window._timelineRange, _currentTimeCode);
+  }
+}
+
+function _setTimelineFPS(fps) {
+  const val = Number(fps);
+  if (!Number.isFinite(val) || val <= 0) return _timeCodesPerSecond;
+  _timeCodesPerSecond = val;
+
+  const scrub = document.getElementById('timeline-scrub');
+  if (scrub) scrub.step = String(Math.max(0.001, 1 / _timeCodesPerSecond));
+
+  if (window._timelineRange) window._timelineRange.fps = _timeCodesPerSecond;
+  if (typeof window._onTimelineRangeChanged === 'function') {
+    window._onTimelineRangeChanged(window._timelineRange, _currentTimeCode);
+  }
+  return _timeCodesPerSecond;
 }
 
 _applyTimelineRange(_startTimeCode, _endTimeCode, _timeCodesPerSecond, false);
@@ -1041,6 +1067,7 @@ function animate() {
       }
 
       _currentTimeCode = tc;
+      window._currentTimeCode = _currentTimeCode;
       _driver.SetTime(tc);
       _driver.Draw();
 
@@ -1098,6 +1125,7 @@ window._threeControls = controls;
 window._usdRoot       = usdRoot;
 window._formatTimeCode = _formatTimeCode;
 window._clampTimeCode = _clampTimeCode;
+window._setTimelineFPS = _setTimelineFPS;
 window.THREE          = THREE;
 </script>
 
@@ -1578,6 +1606,8 @@ document.addEventListener('keydown', function(ev) {
   if (ev.key === 'g' && (ev.ctrlKey || ev.metaKey)) { groupSelected(); ev.preventDefault(); }
   if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey) { cmdUndo(); ev.preventDefault(); }
   if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) { cmdRedo(); ev.preventDefault(); }
+  if (ev.key === 'ArrowLeft') { if (typeof stepTimeline === 'function') stepTimeline(ev.shiftKey ? -10 : -1); ev.preventDefault(); }
+  if (ev.key === 'ArrowRight') { if (typeof stepTimeline === 'function') stepTimeline(ev.shiftKey ? 10 : 1); ev.preventDefault(); }
   if (ev.key === 'h' || ev.key === 'H') { toggleVisibilitySelected(); }
   if (ev.key === 'F2') { renameSelected(); }
 });
@@ -1864,6 +1894,18 @@ window.downloadGLB  = downloadGLB;
 let _playing = false;
 const _scrub = document.getElementById('timeline-scrub');
 const _frameLabel = document.getElementById('timeline-frame');
+const _fpsInput = document.getElementById('timeline-fps');
+
+function _setPlayButtonState(playing) {
+  var btn = document.getElementById('timeline-play');
+  if (btn) btn.textContent = playing ? '⏸' : '▶';
+}
+
+function setPlaybackState(playing) {
+  _playing = !!playing;
+  window._playing = _playing;
+  _setPlayButtonState(_playing);
+}
 
 if (_scrub) {
   _scrub.addEventListener('input', function() {
@@ -1874,18 +1916,73 @@ if (_scrub) {
     if (window._threeScene && window._usdRoot) {
       // Will be picked up by animation loop
       window._manualTimeCode = tc;
+      window._currentTimeCode = tc;
     }
   });
 }
 
-function togglePlayback() {
-  _playing = !_playing;
-  window._playing = _playing;
-  var btn = document.getElementById('timeline-play');
-  if (btn) btn.textContent = _playing ? '⏸' : '▶';
+function stepTimeline(dir) {
+  var step = Number(dir || 0);
+  if (!Number.isFinite(step) || step === 0) return;
+
+  var base = Number(window._currentTimeCode);
+  if (!Number.isFinite(base) && _scrub) base = parseFloat(_scrub.value || '0');
+  if (!Number.isFinite(base)) base = 0;
+
+  var tc = base + step;
+  if (window._clampTimeCode) tc = window._clampTimeCode(tc);
+
+  // DCC-like behavior: stepping pauses playback
+  setPlaybackState(false);
+
+  if (_scrub) _scrub.value = String(tc);
+  if (_frameLabel) _frameLabel.textContent = window._formatTimeCode ? window._formatTimeCode(tc) : String(tc);
+  window._manualTimeCode = tc;
+  window._currentTimeCode = tc;
 }
+
+function togglePlayback() {
+  setPlaybackState(!_playing);
+}
+
+function setTimelineFPS(fpsValue, quiet) {
+  var fps = Number(fpsValue);
+  if (!Number.isFinite(fps) || fps <= 0) return false;
+
+  if (window._setTimelineFPS) fps = window._setTimelineFPS(fps);
+
+  if (_fpsInput) _fpsInput.value = String(Math.round(fps));
+  if (!quiet) setStatus('Timeline FPS: ' + Math.round(fps));
+  return true;
+}
+
+if (_fpsInput) {
+  _fpsInput.addEventListener('change', function() {
+    if (!setTimelineFPS(this.value)) {
+      this.value = String((window._timelineRange && window._timelineRange.fps) || 24);
+    }
+  });
+  _fpsInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') this.blur();
+  });
+}
+
+window._onTimelineRangeChanged = function(range, currentTc) {
+  if (_fpsInput && range && Number.isFinite(Number(range.fps))) {
+    _fpsInput.value = String(Math.round(Number(range.fps)));
+  }
+  if (_frameLabel && Number.isFinite(Number(currentTc))) {
+    _frameLabel.textContent = window._formatTimeCode ? window._formatTimeCode(Number(currentTc)) : String(currentTc);
+  }
+};
+if (window._timelineRange) {
+  window._onTimelineRangeChanged(window._timelineRange, window._currentTimeCode);
+}
+
+setPlaybackState(false);
 window.togglePlayback = togglePlayback;
-window._playing = false;
+window.stepTimeline = stepTimeline;
+window.setTimelineFPS = setTimelineFPS;
 
 // ── Status bar ────────────────────────────────────────────────────────────
 function setStatus(msg, error = false) {
