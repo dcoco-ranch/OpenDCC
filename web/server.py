@@ -1195,7 +1195,7 @@ async def prim_material(prim_path: str):
     if not stage:
         return {"bound": False}
 
-    from pxr import Sdf, UsdShade
+    from pxr import Sdf, UsdShade, Usd
 
     prim = stage.GetPrimAtPath(Sdf.Path(full_path))
     if not prim or not prim.IsValid():
@@ -1210,7 +1210,7 @@ async def prim_material(prim_path: str):
     result = {"bound": True, "materialPath": mat_path, "params": {}}
 
     # Find UsdPreviewSurface shader
-    for shader_prim in mat.GetPrim().GetDescendants():
+    for shader_prim in Usd.PrimRange(mat.GetPrim()):
         shader = UsdShade.Shader(shader_prim)
         if not shader:
             continue
@@ -1243,7 +1243,7 @@ async def material_set_param(mat_path: str, req: _MatParamReq):
     if not stage:
         return {"ok": False, "error": "no stage"}
 
-    from pxr import Sdf, UsdShade, Gf
+    from pxr import Sdf, Usd, UsdShade, Gf
 
     _pxr_push_undo()
 
@@ -1253,7 +1253,7 @@ async def material_set_param(mat_path: str, req: _MatParamReq):
 
     mat = UsdShade.Material(mat_prim)
     # Find UsdPreviewSurface shader
-    for shader_prim in mat_prim.GetDescendants():
+    for shader_prim in Usd.PrimRange(mat_prim):
         shader = UsdShade.Shader(shader_prim)
         if not shader:
             continue
