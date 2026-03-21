@@ -497,7 +497,7 @@ controls.screenSpacePanning = true;
 const gizmo = new TransformControls(camera, renderer.domElement);
 gizmo.setSize(0.75);
 gizmo.space = 'world';
-scene.add(gizmo.getHelper());   // MUST use getHelper() per Three.js docs
+scene.add(gizmo);   // r163: add controls directly (getHelper() is r169+)
 
 gizmo.addEventListener('mouseDown', () => { controls.enabled = false; });
 gizmo.addEventListener('mouseUp', () => { controls.enabled = true; });
