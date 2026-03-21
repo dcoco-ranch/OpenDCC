@@ -60,6 +60,56 @@ _app_core  = None
 _session   = None
 _pxr_stage = None   # Used in pxr-only mode (no opendcc.core)
 
+# Simple undo/redo for pxr mode (USDA snapshot stack)
+_pxr_undo_stack: list = []
+_pxr_redo_stack: list = []
+
+
+def _pxr_push_undo():
+    """Save current pxr stage state for undo."""
+    global _pxr_redo_stack
+    if not _pxr_stage:
+        return
+    try:
+        usda = _pxr_stage.GetRootLayer().ExportToString()
+        _pxr_undo_stack.append(usda)
+        _pxr_redo_stack = []  # clear redo on new action
+        if len(_pxr_undo_stack) > 30:
+            _pxr_undo_stack.pop(0)
+    except Exception:
+        pass
+
+
+def _pxr_do_undo() -> bool:
+    """Restore previous pxr stage state."""
+    global _pxr_stage
+    if not _pxr_undo_stack or not _pxr_stage:
+        return False
+    from pxr import Usd
+    # Save current for redo
+    try:
+        _pxr_redo_stack.append(_pxr_stage.GetRootLayer().ExportToString())
+    except Exception:
+        pass
+    usda = _pxr_undo_stack.pop()
+    _pxr_stage.GetRootLayer().ImportFromString(usda)
+    return True
+
+
+def _pxr_do_redo() -> bool:
+    """Restore next pxr stage state."""
+    global _pxr_stage
+    if not _pxr_redo_stack or not _pxr_stage:
+        return False
+    # Save current for undo
+    try:
+        _pxr_undo_stack.append(_pxr_stage.GetRootLayer().ExportToString())
+    except Exception:
+        pass
+    usda = _pxr_redo_stack.pop()
+    _pxr_stage.GetRootLayer().ImportFromString(usda)
+    return True
+
 
 def _init_opendcc() -> None:
     global _opendcc_available, _pxr_available, _app_core, _session
@@ -1133,6 +1183,7 @@ class _CreatePrimReq(BaseModel):
 async def cmd_create_prim(req: _CreatePrimReq):
     # ── pxr mode (USD Python bindings) ────────────────────────────────────
     if _pxr_available and not _opendcc_available:
+        _pxr_push_undo()
         stage = _current_stage()
         if stage:
             from pxr import Sdf, UsdGeom, UsdLux
@@ -1217,6 +1268,7 @@ class _DeleteReq(BaseModel):
 async def cmd_delete_prims(req: _DeleteReq):
     # ── pxr mode ──────────────────────────────────────────────────────────
     if _pxr_available and not _opendcc_available:
+        _pxr_push_undo()
         stage = _current_stage()
         if stage:
             from pxr import Sdf
@@ -1261,6 +1313,7 @@ class _DuplicateReq(BaseModel):
 async def cmd_duplicate_prims(req: _DuplicateReq):
     # ── pxr mode ──────────────────────────────────────────────────────────
     if _pxr_available and not _opendcc_available:
+        _pxr_push_undo()
         stage = _current_stage()
         if stage:
             from pxr import Sdf, Usd
@@ -1312,6 +1365,7 @@ class _GroupReq(BaseModel):
 async def cmd_group_prims(req: _GroupReq):
     # ── pxr mode ──────────────────────────────────────────────────────────
     if _pxr_available and not _opendcc_available:
+        _pxr_push_undo()
         stage = _current_stage()
         if stage:
             from pxr import Sdf, UsdGeom
@@ -1363,6 +1417,7 @@ class _XformReq(BaseModel):
 @app.post("/api/prims/xform")
 async def cmd_xform_prim(req: _XformReq):
     """Apply translate/rotate/scale to a prim's xformOps."""
+    _pxr_push_undo()
     stage = _current_stage()
     if not stage:
         return {"ok": False, "error": "no stage"}
@@ -1400,6 +1455,7 @@ class _RenameReq(BaseModel):
 async def cmd_rename_prim(req: _RenameReq):
     # ── pxr mode ──────────────────────────────────────────────────────────
     if _pxr_available and not _opendcc_available:
+        _pxr_push_undo()
         stage = _current_stage()
         if stage:
             from pxr import Sdf
@@ -1436,6 +1492,7 @@ class _VisibilityReq(BaseModel):
 async def cmd_set_visibility(req: _VisibilityReq):
     # ── pxr mode ──────────────────────────────────────────────────────────
     if _pxr_available and not _opendcc_available:
+        _pxr_push_undo()
         stage = _current_stage()
         if stage:
             from pxr import Sdf, UsdGeom
@@ -1507,8 +1564,10 @@ async def cmd_parent_prims(req: _ParentReq):
 @app.post("/api/undo")
 async def cmd_undo():
     if _pxr_available and not _opendcc_available:
-        # pxr mode: no undo stack available (would need Sdf.ChangeBlock wrapping)
-        return {"ok": False, "error": "Undo not available in pxr mode (no undo stack)"}
+        ok = _pxr_do_undo()
+        if ok:
+            await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": ok}
     if not _opendcc_available:
         ok = _stub_stage.undo()
         if ok:
@@ -1522,7 +1581,10 @@ async def cmd_undo():
 @app.post("/api/redo")
 async def cmd_redo():
     if _pxr_available and not _opendcc_available:
-        return {"ok": False, "error": "Redo not available in pxr mode (no undo stack)"}
+        ok = _pxr_do_redo()
+        if ok:
+            await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": ok}
     if not _opendcc_available:
         ok = _stub_stage.redo()
         if ok:
