@@ -691,36 +691,7 @@ window.frameAll = function () {
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'f' || e.key === 'F') {
-    // Frame selection if gizmo has an attached object, otherwise frame all
-    const gizmoObj = gizmo.object;
-    if (gizmoObj && gizmoObj.parent) {
-      // Use geometry bbox directly — Hydra meshes may have vertices in world space
-      // while obj.matrixWorld is modified by decompose
-      let box;
-      if (gizmoObj.geometry && gizmoObj.geometry.boundingBox) {
-        box = gizmoObj.geometry.boundingBox.clone();
-      } else if (gizmoObj.geometry) {
-        gizmoObj.geometry.computeBoundingBox();
-        box = gizmoObj.geometry.boundingBox ? gizmoObj.geometry.boundingBox.clone() : null;
-      }
-      if (!box) box = new THREE.Box3().setFromObject(gizmoObj);
-      
-      if (!box.isEmpty()) {
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3()).length();
-        const dist = Math.max(size * 2.5, 1);
-        const dir = camera.position.clone().sub(controls.target).normalize();
-        if (dir.length() < 0.01) dir.set(0.6, 0.4, 0.6).normalize();
-        controls.target.copy(center);
-        camera.position.copy(center).add(dir.multiplyScalar(dist));
-        camera.near = Math.max(0.01, dist / 500);
-        camera.far  = dist * 200;
-        camera.updateProjectionMatrix();
-        controls.update();
-      }
-    } else {
-      window.frameAll();
-    }
+    window.frameAll();
   }
   // Gizmo mode shortcuts
   if (e.key === 'w' || e.key === 'W') { gizmo.setMode('translate'); }
