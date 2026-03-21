@@ -1036,6 +1036,30 @@ async def stage_export_glb():
 
 # ── Stage management ──────────────────────────────────────────────────────────
 
+@app.get("/api/stages")
+async def list_stages():
+    """List available USD stages in the stages directory."""
+    import os
+    stages_root = os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
+    if not os.path.exists(stages_root):
+        return {"stages": [], "root": stages_root}
+
+    stages = []
+    for entry in sorted(os.listdir(stages_root)):
+        full = os.path.join(stages_root, entry)
+        if os.path.isfile(full) and entry.endswith(('.usd', '.usda', '.usdc', '.usdz')):
+            size = os.path.getsize(full)
+            stages.append({"name": entry, "path": entry, "size": size, "type": "file"})
+        elif os.path.isdir(full):
+            # Look for a root USD file inside
+            for f in os.listdir(full):
+                if f.endswith(('.usd', '.usda', '.usdc')) and not f.startswith('.'):
+                    fpath = os.path.join(entry, f)
+                    size = os.path.getsize(os.path.join(full, f))
+                    stages.append({"name": f"{entry}/{f}", "path": fpath,
+                                   "size": size, "type": "dir"})
+    return {"stages": stages, "root": stages_root}
+
 class _StageOpenReq(BaseModel):
     path: str
 

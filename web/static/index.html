@@ -442,10 +442,11 @@
 
 <!-- Open stage modal -->
 <div id="open-modal">
-  <div class="box">
+  <div class="box" style="max-width:500px">
     <h3>Open USD Stage</h3>
+    <div id="stage-browser" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;margin-bottom:10px;background:#1a1a1a"></div>
     <input type="text" id="stage-path-input"
-           placeholder="/data/scenes/kitchen.usda"
+           placeholder="Kitchen_set/Kitchen_set.usd"
            onkeydown="if(event.key==='Enter') confirmOpenStage()" />
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button onclick="document.getElementById('open-modal').classList.remove('open')">Cancel</button>
@@ -1289,6 +1290,23 @@ function setWS(label, ok, err = false) {
 // ── Stage actions ─────────────────────────────────────────────────────────
 function openStageModal() {
   document.getElementById('open-modal').classList.add('open');
+  // Load available stages
+  api('/api/stages').then(function(data) {
+    var browser = document.getElementById('stage-browser');
+    if (!data.stages || !data.stages.length) {
+      browser.innerHTML = '<div style="padding:12px;color:var(--text2);font-size:11px">No stages found in ' + (data.root || '/data/stages') + '</div>';
+      return;
+    }
+    browser.innerHTML = data.stages.map(function(s) {
+      var sizeKB = (s.size / 1024).toFixed(1);
+      var icon = s.type === 'dir' ? '📁' : '📄';
+      return '<div style="padding:6px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid #2a2a2a;display:flex;justify-content:space-between;align-items:center" ' +
+        'onmouseover="this.style.background=\'#2a2a2a\'" onmouseout="this.style.background=\'\'" ' +
+        'onclick="document.getElementById(\'stage-path-input\').value=\'' + s.path + '\'">' +
+        '<span>' + icon + ' ' + s.name + '</span>' +
+        '<span style="color:var(--text2);font-size:10px">' + sizeKB + ' KB</span></div>';
+    }).join('');
+  });
   document.getElementById('stage-path-input').focus();
 }
 async function confirmOpenStage() {
