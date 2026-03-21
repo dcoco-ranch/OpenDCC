@@ -810,36 +810,102 @@ async def health():
     response_class=Response,
     responses={200: {"content": {"model/vnd.usda": {}}}},
 )
-async def stage_export_usda():
+async def stage_export_usda(flatten: bool = False):
+    """Export the current stage as USDA.
+    
+    By default exports the root layer (preserving composition arcs).
+    Set flatten=true to resolve all references into a single layer.
+    """
     stage = _current_stage()
     if stage:
         try:
-            # stage.Flatten() resolves ALL composition arcs:
-            # references, payloads, sublayers, variants → single layer
-            flat_layer = stage.Flatten()
-            usda = flat_layer.ExportToString()
+            if flatten:
+                flat_layer = stage.Flatten()
+                usda = flat_layer.ExportToString()
+            else:
+                usda = stage.GetRootLayer().ExportToString()
             return Response(
                 content=usda,
                 media_type="model/vnd.usda",
                 headers={"Cache-Control": "no-store"},
             )
         except Exception as exc:
-            logger.warning("Flatten failed: %s", exc)
-            try:
-                usda = stage.GetRootLayer().ExportToString()
-                return Response(
-                    content=usda,
-                    media_type="model/vnd.usda",
-                    headers={"Cache-Control": "no-store"},
-                )
-            except Exception:
-                pass
+            logger.warning("Export failed: %s", exc)
     # Fallback to stub
     return Response(
         content=_stub_stage.to_usda(),
         media_type="model/vnd.usda",
         headers={"Cache-Control": "no-store"},
     )
+
+
+# ── Stage dependencies (for WASM composition resolution) ──────────────────────
+
+@app.get("/api/stage/dependencies")
+async def stage_dependencies():
+    """List all external dependencies (sublayers, references, payloads) of the stage."""
+    stage = _current_stage()
+    if not stage:
+        return {"sublayers": [], "references": [], "payloads": []}
+
+    try:
+        from pxr import UsdUtils
+        sublayers = []
+        references = []
+        payloads = []
+        root_path = stage.GetRootLayer().realPath or ""
+        UsdUtils.ExtractExternalReferences(root_path, sublayers, references, payloads)
+        return {
+            "sublayers": sublayers,
+            "references": references,
+            "payloads": payloads,
+            "rootLayer": root_path,
+        }
+    except Exception as exc:
+        # Fallback: enumerate used layers from the stage
+        layers = []
+        try:
+            for layer in stage.GetUsedLayers():
+                layers.append(layer.identifier)
+        except Exception:
+            pass
+        return {"layers": layers, "error": str(exc)}
+
+
+@app.get("/api/stage/layer")
+async def stage_layer(path: str):
+    """Serve a specific layer/asset file for WASM composition resolution."""
+    import os
+    from pathlib import Path as P
+
+    # Security: only serve from allowed roots
+    stages_root = os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
+    allowed_roots = [stages_root, "/opt/opendcc", "/tmp"]
+
+    # Resolve the path
+    resolved = os.path.abspath(path)
+    if not any(resolved.startswith(root) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not os.path.exists(resolved):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+    content = P(resolved).read_bytes()
+    ext = os.path.splitext(resolved)[1].lower()
+    media = {
+        ".usda": "model/vnd.usda",
+        ".usdc": "application/octet-stream",
+        ".usdz": "application/zip",
+        ".usd":  "application/octet-stream",
+        ".png":  "image/png",
+        ".jpg":  "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".hdr":  "image/vnd.radiance",
+        ".exr":  "image/x-exr",
+    }.get(ext, "application/octet-stream")
+
+    return Response(content=content, media_type=media,
+                    headers={"Cache-Control": "max-age=3600"})
 
 
 # ── GLB export (for Three.js GLTFLoader in browser) ──────────────────────────
@@ -1105,35 +1171,33 @@ class _AttrSetReq(BaseModel):
 async def prim_set_attr(prim_path: str, req: _AttrSetReq):
     full_path = "/" + prim_path.lstrip("/")
 
-    if not _opendcc_available:
-        return {"ok": True, "stub": True}
-
     stage = _current_stage()
-    if not stage:
-        raise HTTPException(status_code=400, detail="No stage loaded")
+    if stage:
+        _pxr_push_undo()
+        from pxr import Sdf, Usd
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
 
-    from pxr import Sdf, Usd
-    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
-    if not prim or not prim.IsValid():
-        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+        attr = prim.GetAttribute(req.attribute)
+        if not attr or not attr.IsValid():
+            raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
 
-    attr = prim.GetAttribute(req.attribute)
-    if not attr or not attr.IsValid():
-        raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
+        try:
+            typed_val = _coerce_value(attr, req.value)
+            if req.time is not None:
+                attr.Set(typed_val, Usd.TimeCode(req.time))
+            else:
+                attr.Set(typed_val)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Set failed: {exc}")
 
-    try:
-        typed_val = _coerce_value(attr, req.value)
-        if req.time is not None:
-            attr.Set(typed_val, Usd.TimeCode(req.time))
-        else:
-            attr.Set(typed_val)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Set failed: {exc}")
+        await _conns.broadcast({
+            "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
+        })
+        return {"ok": True}
 
-    await _conns.broadcast({
-        "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
-    })
-    return {"ok": True}
+    return {"ok": True, "stub": True}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -322,6 +322,8 @@
     <button onclick="openStageModal()">Open Stage…</button>
     <button onclick="newStage()">New</button>
     <button onclick="saveStage()">Save</button>
+    <button onclick="downloadUSDA()" title="Download USDA">⬇ USDA</button>
+    <button onclick="downloadGLB()" title="Download GLB">⬇ GLB</button>
     <button onclick="toggleScript()">Script Editor</button>
   </div>
 
@@ -425,6 +427,12 @@
   <div id="statusbar">
     <div class="ws-dot" id="ws-dot"></div>
     <span id="ws-label">Connecting…</span>
+    <span style="width:1px;height:12px;background:var(--border);margin:0 8px"></span>
+    <span style="font-size:10px;color:var(--text2)">Frame:</span>
+    <input type="range" id="timeline-scrub" min="0" max="100" value="0" step="1"
+      style="width:120px;height:14px;cursor:pointer" title="Timeline scrubber">
+    <span id="timeline-frame" style="font-size:10px;color:var(--text2);min-width:30px">0</span>
+    <button id="timeline-play" onclick="togglePlayback()" style="font-size:10px;padding:1px 6px" title="Play/Pause">▶</button>
     <span style="flex:1"></span>
     <span id="vp-stats" style="color:var(--text2)"></span>
     <span id="status-msg"></span>
@@ -736,6 +744,19 @@ try {
   USD = await getUsdModule({
     mainScriptUrlOrBlob: "/usd/bindings/emHdBindings.js",
     locateFile: (file) => "/usd/bindings/" + file,
+    // Resolve external references (sublayers, textures, etc.) via server
+    urlModifier: async (url) => {
+      // If it's a relative path or file path, fetch from our layer endpoint
+      if (!url.startsWith('http') && !url.startsWith('blob:')) {
+        const layerUrl = '/api/stage/layer?path=' + encodeURIComponent(url);
+        try {
+          const r = await fetch(layerUrl);
+          if (r.ok) return await r.blob();
+        } catch (e) {}
+      }
+      // Otherwise try fetching the URL directly
+      return url;
+    },
     onDownloadProgress: (downloaded, total) => {
       const pct = total > 0 ? Math.round(downloaded / total * 100) : 0;
       document.getElementById('progress-fill').style.width = pct + '%';
@@ -904,10 +925,29 @@ function animate() {
     // Skip Hydra Draw while gizmo is dragging (it would overwrite the transform)
     const gizmoBusy = window._gizmo && window._gizmo.dragging;
     if (!gizmoBusy) {
-      _animTime += dt;
-      const tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
+      // Timeline: manual scrub overrides auto-play
+      let tc;
+      if (window._manualTimeCode !== undefined) {
+        tc = window._manualTimeCode;
+        window._manualTimeCode = undefined;
+      } else if (window._playing !== undefined && !window._playing) {
+        // Paused — keep current time
+        tc = _driver.GetTime();
+      } else {
+        _animTime += dt;
+        tc = (_animTime * (1000 / _timeout)) % _endTimeCode;
+      }
       _driver.SetTime(tc);
       _driver.Draw();
+
+      // Update timeline scrubber position
+      const scrub = document.getElementById('timeline-scrub');
+      if (scrub && _endTimeCode > 0) {
+        scrub.max = _endTimeCode;
+        scrub.value = tc;
+        const fl = document.getElementById('timeline-frame');
+        if (fl) fl.textContent = Math.round(tc);
+      }
     }
 
     // Frame the scene AFTER Draw() populates the Three.js scene graph.
@@ -1666,6 +1706,55 @@ document.getElementById('script-editor')?.addEventListener('keydown', function(e
 window.toggleScript = toggleScript;
 window.clearScript  = clearScript;
 window.runScript    = runScript;
+
+// ── Export downloads ──────────────────────────────────────────────────────
+async function downloadUSDA() {
+  const r = await fetch('/api/stage/export.usda?flatten=true', { cache: 'no-store' });
+  if (!r.ok) { setStatus('Export failed', true); return; }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'opendcc_scene.usda';
+  a.click(); URL.revokeObjectURL(a.href);
+  setStatus('USDA exported');
+}
+async function downloadGLB() {
+  const r = await fetch('/api/stage/export.glb', { cache: 'no-store' });
+  if (!r.ok) { setStatus('GLB export failed', true); return; }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'opendcc_scene.glb';
+  a.click(); URL.revokeObjectURL(a.href);
+  setStatus('GLB exported');
+}
+window.downloadUSDA = downloadUSDA;
+window.downloadGLB  = downloadGLB;
+
+// ── Timeline ─────────────────────────────────────────────────────────────
+let _playing = false;
+const _scrub = document.getElementById('timeline-scrub');
+const _frameLabel = document.getElementById('timeline-frame');
+
+if (_scrub) {
+  _scrub.addEventListener('input', function() {
+    _frameLabel.textContent = this.value;
+    // Set time on the WASM driver
+    if (window._threeScene && window._usdRoot) {
+      // Will be picked up by animation loop
+      window._manualTimeCode = parseFloat(this.value);
+    }
+  });
+}
+
+function togglePlayback() {
+  _playing = !_playing;
+  window._playing = _playing;
+  var btn = document.getElementById('timeline-play');
+  if (btn) btn.textContent = _playing ? '⏸' : '▶';
+}
+window.togglePlayback = togglePlayback;
+window._playing = false;
 
 // ── Status bar ────────────────────────────────────────────────────────────
 function setStatus(msg, error = false) {
