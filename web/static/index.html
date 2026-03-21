@@ -1595,6 +1595,12 @@ async function selectPrimByPath(path) {
 }
 window.selectPrimByPath = selectPrimByPath;
 
+// Set a UsdPreviewSurface parameter
+async function setMaterialParam(materialPath, paramName, value) {
+  var key = materialPath.replace(/^\//, '');
+  await api('/api/material/' + key + '/set', 'POST', { param: paramName, value: value });
+}
+
 // ── Material panel (loads UsdPreviewSurface params for selected prim) ─────
 async function loadMaterialPanel(primPath) {
   var matSection = document.getElementById('material-section');
@@ -1647,9 +1653,12 @@ async function loadMaterialPanel(primPath) {
     } else if (/roughness|metallic|opacity|ior|clearcoat/.test(name) && val) {
       var fval = parseFloat(val);
       if (!isNaN(fval)) {
-        td2.innerHTML = '<input type="range" class="attr-slider" min="0" max="' +
-          (name === 'ior' ? '3' : '1') + '" step="0.01" value="' + fval +
-          '" disabled> <span>' + fval.toFixed(2) + '</span>';
+        var maxVal = name === 'ior' ? '3' : '1';
+        td2.innerHTML = '<input type="range" class="attr-slider" min="0" max="' + maxVal +
+          '" step="0.01" value="' + fval +
+          '" oninput="this.nextSibling.textContent=parseFloat(this.value).toFixed(2)"' +
+          ' onchange="setMaterialParam(\'' + mat.materialPath + '\',\'' + name + '\',parseFloat(this.value))"' +
+          '> <span>' + fval.toFixed(2) + '</span>';
       } else { td2.textContent = val || '—'; }
     } else {
       td2.textContent = val || '—';

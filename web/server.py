@@ -1230,6 +1230,57 @@ async def prim_material(prim_path: str):
     return result
 
 
+class _MatParamReq(BaseModel):
+    param: str
+    value: Any
+
+
+@app.post("/api/material/{mat_path:path}/set")
+async def material_set_param(mat_path: str, req: _MatParamReq):
+    """Set a UsdPreviewSurface parameter on a material."""
+    full_path = "/" + mat_path.lstrip("/")
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade, Gf
+
+    _pxr_push_undo()
+
+    mat_prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not mat_prim or not mat_prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Material not found: {full_path}")
+
+    mat = UsdShade.Material(mat_prim)
+    # Find UsdPreviewSurface shader
+    for shader_prim in mat_prim.GetDescendants():
+        shader = UsdShade.Shader(shader_prim)
+        if not shader:
+            continue
+        shader_id = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
+        if shader_id != "UsdPreviewSurface":
+            continue
+
+        inp = shader.GetInput(req.param)
+        if inp:
+            try:
+                # Coerce value based on parameter type
+                if isinstance(req.value, (int, float)):
+                    inp.Set(float(req.value))
+                elif isinstance(req.value, list) and len(req.value) == 3:
+                    inp.Set(Gf.Vec3f(*[float(v) for v in req.value]))
+                else:
+                    inp.Set(req.value)
+                await _conns.broadcast({"event": "scene_changed"})
+                return {"ok": True}
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+        raise HTTPException(status_code=404, detail=f"Param not found: {req.param}")
+
+    raise HTTPException(status_code=404, detail="No UsdPreviewSurface shader found")
+
+
 # ── Attribute editing ─────────────────────────────────────────────────────────
 
 class _AttrSetReq(BaseModel):
