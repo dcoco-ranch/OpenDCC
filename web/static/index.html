@@ -1405,6 +1405,8 @@ async function api(url, method = 'GET', body = null) {
 // Avoids full WASM driver rebuild on every keystroke/create/delete.
 // Outliner refreshes instantly; viewport catches up after 600ms of calm.
 let _vpReloadTimer = null;
+let _matPanelRefreshTimer = null;
+
 function _scheduleViewportReload() {
   if (window._gizmoJustDragged) return;  // skip reload after gizmo transform
   if (_vpReloadTimer) clearTimeout(_vpReloadTimer);
@@ -1412,6 +1414,16 @@ function _scheduleViewportReload() {
     _vpReloadTimer = null;
     if (typeof window.reloadStage === 'function') window.reloadStage(false);
   }, 600);
+}
+
+function _scheduleMaterialPanelRefresh() {
+  if (_matPanelRefreshTimer) clearTimeout(_matPanelRefreshTimer);
+  _matPanelRefreshTimer = setTimeout(function() {
+    _matPanelRefreshTimer = null;
+    if (typeof refreshMaterialPanel === 'function' && _inspectorTab === 'material') {
+      refreshMaterialPanel();
+    }
+  }, 120);
 }
 
 // ── Viewport picking (click on 3D object → select prim) ──────────────────
@@ -1615,6 +1627,11 @@ function connectWS() {
       refreshPrims();
       // Debounce viewport reload (slow — full WASM driver rebuild)
       _scheduleViewportReload();
+    }
+    if (msg.event === 'material_changed') {
+      // Avoid full stage reload on material tweaks (low-latency interaction).
+      setStatus('Material updated');
+      _scheduleMaterialPanelRefresh();
     }
     if (msg.event === 'stage_opened') {
       document.getElementById('stage-label').textContent = msg.path || '[stage]';

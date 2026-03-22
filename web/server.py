@@ -1744,7 +1744,13 @@ async def material_bind(req: _MatBindReq):
     except Exception:
         UsdShade.MaterialBindingAPI(prim).Bind(mat)
 
-    await _conns.broadcast({"event": "scene_changed"})
+    await _conns.broadcast({
+        "event": "material_changed",
+        "primPath": prim_path,
+        "materialPath": str(mat.GetPath()),
+        "bind": True,
+        "created": created,
+    })
     return {
         "ok": True,
         "created": created,
@@ -1787,7 +1793,11 @@ async def material_set_param(mat_path: str, req: _MatParamReq):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    await _conns.broadcast({"event": "scene_changed"})
+    await _conns.broadcast({
+        "event": "material_changed",
+        "materialPath": full_path,
+        "param": req.param,
+    })
     return {"ok": True}
 
 
@@ -1827,7 +1837,13 @@ async def material_set_texture(mat_path: str, req: _MatTextureReq):
             inp.DisconnectSource()
         except Exception:
             pass
-        await _conns.broadcast({"event": "scene_changed"})
+        await _conns.broadcast({
+            "event": "material_changed",
+            "materialPath": full_path,
+            "param": req.param,
+            "texture": True,
+            "cleared": True,
+        })
         return {"ok": True, "cleared": True}
 
     base = _sanitize_ident(req.param, "tex")
@@ -1861,7 +1877,13 @@ async def material_set_texture(mat_path: str, req: _MatTextureReq):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Texture connect failed: {exc}")
 
-    await _conns.broadcast({"event": "scene_changed"})
+    await _conns.broadcast({
+        "event": "material_changed",
+        "materialPath": full_path,
+        "param": req.param,
+        "texture": True,
+        "asset_path": asset_path,
+    })
     return {"ok": True, "asset_path": asset_path, "output": out_name}
 
 
