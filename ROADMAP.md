@@ -116,6 +116,7 @@
 - [x] Connexions dynamiques drag & drop (connect/disconnect) avec authoring USD immédiat
 - [x] Création / suppression de nodes shader dans le graphe
 - [x] Édition des valeurs d’inputs shader (constantes) depuis le workbench
+- [x] Menu contextuel clic droit (filtrable) pour ajout rapide de nodes
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)
 - [x] Syntax highlighting Python (CodeMirror, fallback textarea si CDN indisponible)

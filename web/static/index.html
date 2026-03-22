@@ -439,6 +439,57 @@
       padding: 2px 6px;
       font-size: 11px;
     }
+    #node-context-menu {
+      position: absolute;
+      z-index: 20;
+      min-width: 240px;
+      max-width: 320px;
+      max-height: 320px;
+      display: none;
+      flex-direction: column;
+      border: 1px solid #5a6d82;
+      border-radius: 6px;
+      background: #1f2328;
+      box-shadow: 0 6px 18px rgba(0,0,0,.45);
+      overflow: hidden;
+    }
+    #node-context-menu .head {
+      padding: 6px;
+      border-bottom: 1px solid var(--border);
+      background: #262c33;
+    }
+    #node-context-menu .head input {
+      width: 100%;
+      height: 24px;
+      background: #111;
+      border: 1px solid #4f5966;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 11px;
+    }
+    #node-context-menu .items {
+      overflow: auto;
+      max-height: 260px;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .node-menu-item {
+      border: 1px solid transparent;
+      background: #232a32;
+      color: var(--text);
+      border-radius: 4px;
+      text-align: left;
+      font-size: 11px;
+      padding: 5px 7px;
+      cursor: pointer;
+    }
+    .node-menu-item:hover, .node-menu-item.active {
+      border-color: #6f8fb6;
+      background: #2f3f52;
+    }
     #node-workbench svg text {
       user-select: none;
       pointer-events: none;
@@ -3388,14 +3439,150 @@ const _nodeGraphUi = {
   canvasEl: null,
   host: null,
   nodesByPath: {},
+  nodePositions: {},
   suppress: false,
   library: [],
+  menuPos: null,
 };
 
 function _nodeGetSelectedLiteNode() {
   if (!_nodeGraphUi.canvas || !_nodeGraphUi.canvas.selected_nodes) return null;
   var vals = Object.values(_nodeGraphUi.canvas.selected_nodes);
   return vals.length ? vals[0] : null;
+}
+
+function _nodeContextMenuHide() {
+  var menu = document.getElementById('node-context-menu');
+  if (!menu) return;
+  menu.style.display = 'none';
+  _nodeGraphUi.menuPos = null;
+}
+
+function _nodeContextMenuRenderItems(filterTxt) {
+  var menu = document.getElementById('node-context-menu');
+  if (!menu) return;
+  var itemsHost = menu.querySelector('.items');
+  if (!itemsHost) return;
+
+  var txt = String(filterTxt || '').toLowerCase().trim();
+  var list = (_nodeGraphUi.library || []).filter(function(it) {
+    if (!txt) return true;
+    var a = String(it.id || '').toLowerCase();
+    var b = String(it.label || '').toLowerCase();
+    return a.indexOf(txt) >= 0 || b.indexOf(txt) >= 0;
+  });
+
+  itemsHost.innerHTML = '';
+  if (!list.length) {
+    var empty = document.createElement('div');
+    empty.style.cssText = 'padding:8px;color:var(--text2);font-size:11px';
+    empty.textContent = 'No match';
+    itemsHost.appendChild(empty);
+    return;
+  }
+
+  list.forEach(function(it, idx) {
+    var btn = document.createElement('button');
+    btn.className = 'node-menu-item' + (idx === 0 ? ' active' : '');
+    btn.textContent = (it.label || it.id) + '  [' + it.id + ']';
+    btn.onclick = async function() {
+      if (!_nodeWorkbenchState.primPath) return;
+      _suppressMatWsUntil = Date.now() + 250;
+      var res = await api('/api/node_graph/create_node', 'POST', {
+        prim_path: _nodeWorkbenchState.primPath,
+        shader_id: it.id,
+        node_name: '',
+      });
+      if (!res || !res.ok) {
+        setStatus('Node create failed', true);
+        return;
+      }
+      if (_nodeGraphUi.menuPos && res.nodePath) {
+        _nodeGraphUi.nodePositions[res.nodePath] = { x: _nodeGraphUi.menuPos.x, y: _nodeGraphUi.menuPos.y };
+      }
+      _nodeContextMenuHide();
+      setStatus('Node created: ' + (res.nodePath || it.id));
+      _nodeWorkbenchState.signature = '';
+      await loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+    };
+    itemsHost.appendChild(btn);
+  });
+}
+
+function _nodeContextMenuShow(clientX, clientY, canvasX, canvasY) {
+  var menu = document.getElementById('node-context-menu');
+  var field = document.getElementById('node-menu-filter');
+  var wrap = document.getElementById('node-canvas-wrap');
+  if (!menu || !field || !wrap) return;
+
+  _nodeGraphUi.menuPos = { x: canvasX, y: canvasY };
+
+  var wr = wrap.getBoundingClientRect();
+  var x = Math.max(6, Math.min(clientX - wr.left, wr.width - 260));
+  var y = Math.max(6, Math.min(clientY - wr.top, wr.height - 220));
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.style.display = 'flex';
+
+  field.value = '';
+  _nodeContextMenuRenderItems('');
+  setTimeout(function() { try { field.focus(); } catch (_) {} }, 0);
+}
+
+function _nodeAttachContextMenuHandlers(canvasEl) {
+  if (!canvasEl || canvasEl.__nodeCtxMenuBound) return;
+  canvasEl.__nodeCtxMenuBound = true;
+
+  canvasEl.addEventListener('contextmenu', function(ev) {
+    ev.preventDefault();
+    if (!_nodeGraphUi.canvas || !_nodeGraphUi.library.length) return;
+
+    var c = [0, 0];
+    try {
+      if (_nodeGraphUi.canvas.convertEventToCanvasOffset) {
+        c = _nodeGraphUi.canvas.convertEventToCanvasOffset(ev);
+      } else {
+        c = [ev.offsetX || 0, ev.offsetY || 0];
+      }
+    } catch (_) {}
+
+    _nodeContextMenuShow(ev.clientX, ev.clientY, Number(c[0] || 0), Number(c[1] || 0));
+  });
+
+  document.addEventListener('mousedown', function(ev) {
+    var menu = document.getElementById('node-context-menu');
+    if (!menu || menu.style.display !== 'flex') return;
+    if (!menu.contains(ev.target)) _nodeContextMenuHide();
+  });
+
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape') _nodeContextMenuHide();
+  });
+}
+
+async function _nodeEnsureLiteGraphLoaded() {
+  if (window.LiteGraph) return true;
+
+  async function loadOne(src) {
+    return await new Promise(function(resolve) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = function() { resolve(true); };
+      s.onerror = function() { resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+
+  var urls = [
+    'https://cdn.jsdelivr.net/npm/litegraph.js@0.7.17/build/litegraph.min.js',
+    'https://unpkg.com/litegraph.js@0.7.17/build/litegraph.min.js',
+  ];
+
+  for (var i = 0; i < urls.length; i++) {
+    var ok = await loadOne(urls[i]);
+    if (ok && window.LiteGraph) return true;
+  }
+  return !!window.LiteGraph;
 }
 
 async function _deleteSelectedNodeInWorkbench() {
@@ -3555,7 +3742,9 @@ function _nodeEnsureWorkbenchLayout(host) {
   if (!host) return;
   if (host.querySelector('#node-toolbar')) {
     _nodeGraphUi.host = host;
-    return;
+    if (_nodeGraphUi.initialized) return;
+    if (!window.LiteGraph) return;
+    host.innerHTML = ''; // rebuild once LiteGraph becomes available
   }
 
   host.innerHTML = '';
@@ -3570,7 +3759,7 @@ function _nodeEnsureWorkbenchLayout(host) {
     + '<span style="width:1px;height:14px;background:var(--border);margin:0 4px"></span>'
     + '<button id="node-del-btn" style="padding:1px 6px;font-size:10px">🗑 Delete selected</button>'
     + '<span style="flex:1"></span>'
-    + '<span id="node-legend" style="color:var(--text2);font-size:10px">Drag from output to input to connect</span>';
+    + '<span id="node-legend" style="color:var(--text2);font-size:10px">Drag output→input to connect • Right-click canvas to add node</span>';
 
   var msg = document.createElement('div');
   msg.id = 'node-msg';
@@ -3585,6 +3774,11 @@ function _nodeEnsureWorkbenchLayout(host) {
   var inspector = document.createElement('div');
   inspector.id = 'node-inspector';
   inspector.innerHTML = '<div style="color:var(--text2)">Select a node to inspect/edit inputs.</div>';
+
+  var menu = document.createElement('div');
+  menu.id = 'node-context-menu';
+  menu.innerHTML = '<div class="head"><input id="node-menu-filter" type="text" placeholder="Add node… filter by name/id" /></div><div class="items"></div>';
+  wrap.appendChild(menu);
 
   host.appendChild(toolbar);
   host.appendChild(msg);
@@ -3619,6 +3813,32 @@ function _nodeEnsureWorkbenchLayout(host) {
     await _deleteSelectedNodeInWorkbench();
   });
 
+  var menuFilter = document.getElementById('node-menu-filter');
+  if (menuFilter) {
+    menuFilter.addEventListener('input', function() {
+      _nodeContextMenuRenderItems(menuFilter.value || '');
+    });
+    menuFilter.addEventListener('keydown', async function(ev) {
+      var items = Array.from(document.querySelectorAll('#node-context-menu .node-menu-item'));
+      var idx = items.findIndex(function(i) { return i.classList.contains('active'); });
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        if (!items.length) return;
+        if (idx < 0) idx = 0;
+        items[idx].classList.remove('active');
+        idx = (ev.key === 'ArrowDown') ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+        items[idx].classList.add('active');
+        items[idx].scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        var chosen = (idx >= 0 ? items[idx] : items[0]);
+        if (chosen) chosen.click();
+      }
+    });
+  }
+
   if (!window.LiteGraph) {
     msg.textContent = 'LiteGraph unavailable — falling back to static graph view';
     return;
@@ -3630,8 +3850,12 @@ function _nodeEnsureWorkbenchLayout(host) {
     graphCanvas.background_image = null;
     graphCanvas.clear_background = true;
     graphCanvas.allow_interaction = true;
+    graphCanvas.read_only = false;
+    graphCanvas.allow_dragnodes = true;
+    graphCanvas.allow_dragcanvas = true;
     graphCanvas.always_render_background = true;
     graphCanvas.onNodeSelected = function(n) {
+      setStatus('Node selected: ' + ((n && n.title) || '')); 
       _nodeRenderSelectedNodeEditor(n || null);
     };
     graphCanvas.onNodeDeselected = function() {
@@ -3692,6 +3916,13 @@ function _nodeEnsureWorkbenchLayout(host) {
       _scheduleNodePanelRefresh();
     };
 
+    graph.onNodeMoved = function(node) {
+      if (!node || !node.__nodePath || !Array.isArray(node.pos)) return;
+      _nodeGraphUi.nodePositions[node.__nodePath] = { x: Number(node.pos[0] || 0), y: Number(node.pos[1] || 0) };
+    };
+
+    _nodeAttachContextMenuHandlers(canvas);
+
     _nodeGraphUi.graph = graph;
     _nodeGraphUi.canvas = graphCanvas;
     _nodeGraphUi.initialized = true;
@@ -3750,7 +3981,8 @@ function _nodeBuildInteractiveGraph(data) {
     _nodeGraphUi.nodesByPath = {};
 
     nodes.forEach(function(dn) {
-      var node = _nodeMakeLiteNode(dn, layout.pos[dn.id]);
+      var p = _nodeGraphUi.nodePositions[dn.path || dn.id] || layout.pos[dn.id];
+      var node = _nodeMakeLiteNode(dn, p);
       _nodeGraphUi.graph.add(node);
       _nodeGraphUi.nodesByPath[node.__nodePath] = node;
     });
@@ -3798,6 +4030,7 @@ function _renderNodePanelContent(host, primPath, data) {
   var info = '<b style="color:var(--text)">Prim</b> ' + _nodeEsc(primPath || '—');
 
   if (!primPath) {
+    _nodeContextMenuHide();
     msg.innerHTML = info + '<br/>Select a prim to inspect shader graph';
     _nodeSetToolbarEnabled(false);
     if (wrap) wrap.style.display = 'none';
@@ -3807,6 +4040,7 @@ function _renderNodePanelContent(host, primPath, data) {
   }
 
   if (!data || data.ok === false) {
+    _nodeContextMenuHide();
     msg.innerHTML = info + '<br/><span style="color:var(--danger)">Failed to load node graph</span>';
     _nodeSetToolbarEnabled(false);
     if (wrap) wrap.style.display = 'none';
@@ -3818,6 +4052,7 @@ function _renderNodePanelContent(host, primPath, data) {
   _nodePopulateLibrary(data.library || []);
 
   if (!data.bound) {
+    _nodeContextMenuHide();
     _nodeSetToolbarEnabled(false);
     if (wrap) wrap.style.display = 'none';
     if (inspector) inspector.style.display = 'none';
@@ -3851,6 +4086,7 @@ function _renderNodePanelContent(host, primPath, data) {
   }
 
   // Fallback: static SVG if LiteGraph runtime unavailable
+  _nodeContextMenuHide();
   if (inspector) inspector.style.display = 'none';
   _nodeRenderSelectedNodeEditor(null);
   wrap.innerHTML = '';
@@ -3861,6 +4097,10 @@ async function loadNodePanel(primPath, opts) {
   opts = opts || {};
   var host = document.getElementById('node-workbench-content');
   if (!host) return;
+
+  if (!window.LiteGraph && !_nodeGraphUi.initialized) {
+    await _nodeEnsureLiteGraphLoaded();
+  }
 
   var path = String(primPath || '');
   var requestId = ++_nodeWorkbenchState.reqId;
