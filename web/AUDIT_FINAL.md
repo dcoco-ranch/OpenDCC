@@ -11,6 +11,26 @@ Branch: `develop`
 
 ---
 
+## GO / NO-GO express (10 cases)
+> Validation rapide avant release/cut de démo.
+
+1. [ ] `/health` = `ok`
+2. [ ] Node Workbench s’ouvre en `Split`, `Detached`, `Fullscreen` sans bug
+3. [ ] `+ Create & Bind PreviewSurface` fonctionne sur prim sans matériau
+4. [ ] Node `create` fonctionne (au moins `UsdUVTexture`)
+5. [ ] Drag & drop `connect` node→node fonctionne
+6. [ ] Drag & drop `connect` shader→material `surface` fonctionne
+7. [ ] `disconnect` (unlink) fonctionne sans casser le graphe
+8. [ ] `delete` node (bouton + touche `Delete`) fonctionne
+9. [ ] Material Editor reste non-régressif (param + texture update live)
+10. [ ] `save_edits_as` confirme l’authoring non-destructif (sidecar overrides)
+
+### Règle de décision express
+- **GO** = 10/10 vert
+- **NO-GO** = ≥1 case rouge
+
+---
+
 ## 1) Parité fonctionnelle (vs native OpenDCC)
 
 ### Timeline / Curve
