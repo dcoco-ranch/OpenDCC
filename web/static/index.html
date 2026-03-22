@@ -4094,10 +4094,10 @@ function _nodeMakeLiteNode(dataNode, pos) {
   else if (kind === 'reader') { n.color = '#7865a0'; n.bgcolor = '#3b334d'; }
 
   if (n.__isMaterial) {
-    (dataNode.outputs || []).forEach(function(o) { n.addInput(o.name, o.type || '*'); });
+    (dataNode.outputs || []).forEach(function(o) { n.addInput(o.name, '*'); });
   } else {
-    (dataNode.inputs || []).forEach(function(i) { n.addInput(i.name, i.type || '*'); });
-    (dataNode.outputs || []).forEach(function(o) { n.addOutput(o.name, o.type || '*'); });
+    (dataNode.inputs || []).forEach(function(i) { n.addInput(i.name, '*'); });
+    (dataNode.outputs || []).forEach(function(o) { n.addOutput(o.name, '*'); });
   }
 
   n.size = n.computeSize ? n.computeSize() : n.size;
@@ -4134,6 +4134,16 @@ function _nodeBuildInteractiveGraph(data) {
 
       var outSlot = s.findOutputSlot ? s.findOutputSlot(e.sourceOutput) : -1;
       var inSlot = t.findInputSlot ? t.findInputSlot(e.targetInput) : -1;
+
+      if (outSlot < 0 && e.sourceOutput && s.addOutput) {
+        try { s.addOutput(e.sourceOutput, '*'); } catch (_) {}
+        outSlot = s.findOutputSlot ? s.findOutputSlot(e.sourceOutput) : outSlot;
+      }
+      if (inSlot < 0 && e.targetInput && t.addInput) {
+        try { t.addInput(e.targetInput, '*'); } catch (_) {}
+        inSlot = t.findInputSlot ? t.findInputSlot(e.targetInput) : inSlot;
+      }
+
       if (outSlot < 0 || inSlot < 0) return;
 
       try {
