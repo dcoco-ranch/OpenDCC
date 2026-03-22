@@ -1407,6 +1407,133 @@ async def prim_set_attr(prim_path: str, req: _AttrSetReq):
     return {"ok": True, "stub": True}
 
 
+# ── Keyframe editing (Curve Editor) ──────────────────────────────────────────
+
+class _KeyframeSetReq(BaseModel):
+    attribute: str
+    time: float
+    value: Any
+
+
+class _KeyframeDeleteReq(BaseModel):
+    attribute: str
+    time: float
+
+
+class _KeyframeMoveReq(BaseModel):
+    attribute: str
+    from_time: float
+    to_time: float
+
+
+@app.post("/api/prim/{prim_path:path}/keyframe/set")
+async def prim_set_keyframe(prim_path: str, req: _KeyframeSetReq):
+    full_path = "/" + prim_path.lstrip("/")
+
+    stage = _current_stage()
+    if stage:
+        _pxr_push_undo()
+        from pxr import Sdf, Usd
+
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+        attr = prim.GetAttribute(req.attribute)
+        if not attr or not attr.IsValid():
+            raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
+
+        try:
+            typed_val = _coerce_value(attr, req.value)
+            tc = Usd.TimeCode(float(req.time))
+            attr.Set(typed_val, tc)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Set keyframe failed: {exc}")
+
+        await _conns.broadcast({
+            "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
+        })
+        return {"ok": True, "path": full_path, "attribute": req.attribute, "time": req.time}
+
+    return {"ok": True, "stub": True}
+
+
+@app.post("/api/prim/{prim_path:path}/keyframe/delete")
+async def prim_delete_keyframe(prim_path: str, req: _KeyframeDeleteReq):
+    full_path = "/" + prim_path.lstrip("/")
+
+    stage = _current_stage()
+    if stage:
+        _pxr_push_undo()
+        from pxr import Sdf, Usd
+
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+        attr = prim.GetAttribute(req.attribute)
+        if not attr or not attr.IsValid():
+            raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
+
+        try:
+            tc = Usd.TimeCode(float(req.time))
+            attr.ClearAtTime(tc)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Delete keyframe failed: {exc}")
+
+        await _conns.broadcast({
+            "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
+        })
+        return {"ok": True, "path": full_path, "attribute": req.attribute, "time": req.time}
+
+    return {"ok": True, "stub": True}
+
+
+@app.post("/api/prim/{prim_path:path}/keyframe/move")
+async def prim_move_keyframe(prim_path: str, req: _KeyframeMoveReq):
+    full_path = "/" + prim_path.lstrip("/")
+
+    stage = _current_stage()
+    if stage:
+        _pxr_push_undo()
+        from pxr import Sdf, Usd
+
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+        attr = prim.GetAttribute(req.attribute)
+        if not attr or not attr.IsValid():
+            raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
+
+        from_tc = Usd.TimeCode(float(req.from_time))
+        to_tc = Usd.TimeCode(float(req.to_time))
+
+        try:
+            value = attr.Get(from_tc)
+            if value is None:
+                raise HTTPException(status_code=404, detail=f"No keyframe at time {req.from_time}")
+            attr.Set(value, to_tc)
+            attr.ClearAtTime(from_tc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Move keyframe failed: {exc}")
+
+        await _conns.broadcast({
+            "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
+        })
+        return {
+            "ok": True,
+            "path": full_path,
+            "attribute": req.attribute,
+            "from_time": req.from_time,
+            "to_time": req.to_time,
+        }
+
+    return {"ok": True, "stub": True}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # DCC commands  (mirrors opendcc.cmds / opendcc.actions)
 # ═════════════════════════════════════════════════════════════════════════════

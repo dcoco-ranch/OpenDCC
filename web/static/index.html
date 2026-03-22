@@ -1879,6 +1879,8 @@ let _curveState = {
   attrs: [],
   selectedAttr: '',
   currentTime: 0,
+  selectedKeyTime: null,
+  selectedKeyValue: null,
 };
 
 function _curveEsc(s) {
@@ -1916,6 +1918,152 @@ function _ensureCurveSection() {
   return sec;
 }
 
+function _getCurveAttrByName(name) {
+  for (var i = 0; i < _curveState.attrs.length; i++) {
+    if (_curveState.attrs[i].name === name) return _curveState.attrs[i];
+  }
+  return null;
+}
+
+function _updateCurveKeyStatus(attr, numericSamples) {
+  var statusEl = document.getElementById('curve-key-status');
+  if (!statusEl) return;
+
+  if (!attr) {
+    statusEl.textContent = 'No key selected';
+    return;
+  }
+
+  var selected = Number(_curveState.selectedKeyTime);
+  if (!Number.isFinite(selected)) {
+    statusEl.textContent = 'No key selected';
+    return;
+  }
+
+  var found = null;
+  for (var i = 0; i < numericSamples.length; i++) {
+    if (Math.abs(numericSamples[i].time - selected) < 1e-6) {
+      found = numericSamples[i];
+      break;
+    }
+  }
+
+  if (!found) {
+    statusEl.textContent = 'No key selected';
+    return;
+  }
+
+  statusEl.textContent = 'Selected key: t=' + found.time.toFixed(3).replace(/\.?0+$/, '') +
+                         '  v=' + found.value.toFixed(6).replace(/\.?0+$/, '');
+}
+
+function _parseCurveValueInput(raw) {
+  var txt = String(raw == null ? '' : raw).trim();
+  if (!txt) return 0;
+  try { return JSON.parse(txt); } catch (_) {}
+  var n = Number(txt);
+  if (Number.isFinite(n)) return n;
+  return txt;
+}
+
+function curveSelectKey(time) {
+  var t = Number(time);
+  if (!Number.isFinite(t)) return;
+
+  var attr = _getCurveAttrByName(_curveState.selectedAttr);
+  if (!attr) return;
+
+  _curveState.selectedKeyTime = t;
+
+  var sampleValue = null;
+  var samples = attr.samples || [];
+  for (var i = 0; i < samples.length; i++) {
+    var st = Number(samples[i].time);
+    if (Number.isFinite(st) && Math.abs(st - t) < 1e-6) {
+      sampleValue = samples[i].value;
+      break;
+    }
+  }
+  _curveState.selectedKeyValue = sampleValue;
+
+  var valueInput = document.getElementById('curve-value-input');
+  if (valueInput && sampleValue != null) valueInput.value = String(sampleValue);
+
+  _renderCurveFromState(_curveState.currentTime);
+}
+window.curveSelectKey = curveSelectKey;
+
+async function curveAddKeyAtCurrent() {
+  if (!_curveState.primPath || !_curveState.selectedAttr) return;
+  var tc = Number(window._currentTimeCode);
+  if (!Number.isFinite(tc)) return;
+
+  var valueInput = document.getElementById('curve-value-input');
+  var value = _parseCurveValueInput(valueInput ? valueInput.value : '0');
+  var key = _curveState.primPath.replace(/^\//, '');
+
+  var res = await api('/api/prim/' + key + '/keyframe/set', 'POST', {
+    attribute: _curveState.selectedAttr,
+    time: tc,
+    value: value,
+  });
+  if (!res.ok) return;
+
+  _curveState.selectedKeyTime = tc;
+  _curveState.selectedKeyValue = value;
+  await loadCurvePanel(_curveState.primPath, tc);
+  _refreshSelectedPrimAtTimelineTime(true);
+  setStatus('Key added: ' + _curveState.selectedAttr + ' @ ' + (window._formatTimeCode ? window._formatTimeCode(tc) : tc));
+}
+
+async function curveDeleteSelectedKey() {
+  if (!_curveState.primPath || !_curveState.selectedAttr) return;
+  var kt = Number(_curveState.selectedKeyTime);
+  if (!Number.isFinite(kt)) {
+    setStatus('Select a key first in curve editor', true);
+    return;
+  }
+
+  var key = _curveState.primPath.replace(/^\//, '');
+  var res = await api('/api/prim/' + key + '/keyframe/delete', 'POST', {
+    attribute: _curveState.selectedAttr,
+    time: kt,
+  });
+  if (!res.ok) return;
+
+  _curveState.selectedKeyTime = null;
+  _curveState.selectedKeyValue = null;
+  await loadCurvePanel(_curveState.primPath, Number(window._currentTimeCode));
+  _refreshSelectedPrimAtTimelineTime(true);
+  setStatus('Key deleted: ' + _curveState.selectedAttr + ' @ ' + (window._formatTimeCode ? window._formatTimeCode(kt) : kt));
+}
+
+async function curveMoveSelectedKeyToCurrent() {
+  if (!_curveState.primPath || !_curveState.selectedAttr) return;
+  var fromT = Number(_curveState.selectedKeyTime);
+  var toT = Number(window._currentTimeCode);
+  if (!Number.isFinite(fromT)) {
+    setStatus('Select a key first in curve editor', true);
+    return;
+  }
+  if (!Number.isFinite(toT) || Math.abs(toT - fromT) < 1e-6) return;
+
+  var key = _curveState.primPath.replace(/^\//, '');
+  var res = await api('/api/prim/' + key + '/keyframe/move', 'POST', {
+    attribute: _curveState.selectedAttr,
+    from_time: fromT,
+    to_time: toT,
+  });
+  if (!res.ok) return;
+
+  _curveState.selectedKeyTime = toT;
+  await loadCurvePanel(_curveState.primPath, toT);
+  _refreshSelectedPrimAtTimelineTime(true);
+  setStatus('Key moved: ' + _curveState.selectedAttr + ' ' +
+            (window._formatTimeCode ? window._formatTimeCode(fromT) : fromT) + ' → ' +
+            (window._formatTimeCode ? window._formatTimeCode(toT) : toT));
+}
+
 function _renderCurveFromState(timeCode) {
   var svg = document.getElementById('curve-svg');
   if (!svg) return;
@@ -1929,6 +2077,7 @@ function _renderCurveFromState(timeCode) {
   }
   if (!attr) {
     svg.innerHTML = '<text x="8" y="20" fill="#999" font-size="11">No curve selected</text>';
+    _updateCurveKeyStatus(null, []);
     return;
   }
 
@@ -1941,6 +2090,7 @@ function _renderCurveFromState(timeCode) {
 
   if (!numeric.length) {
     svg.innerHTML = '<text x="8" y="20" fill="#999" font-size="11">No numeric samples for ' + _curveEsc(attr.name) + '</text>';
+    _updateCurveKeyStatus(attr, []);
     return;
   }
 
@@ -1958,8 +2108,13 @@ function _renderCurveFromState(timeCode) {
   function sy(v) { return (h - pad) - ((v - vMin) / (vMax - vMin)) * (h - pad * 2); }
 
   var points = numeric.map(function(s) { return sx(s.time).toFixed(2) + ',' + sy(s.value).toFixed(2); }).join(' ');
+  var selectedTime = Number(_curveState.selectedKeyTime);
   var circles = numeric.map(function(s) {
-    return '<circle cx="' + sx(s.time).toFixed(2) + '" cy="' + sy(s.value).toFixed(2) + '" r="2.5" fill="#5a8fc2" />';
+    var isSel = Number.isFinite(selectedTime) && Math.abs(selectedTime - s.time) < 1e-6;
+    var radius = isSel ? 4 : 2.5;
+    var fill = isSel ? '#ffd26f' : '#5a8fc2';
+    return '<circle cx="' + sx(s.time).toFixed(2) + '" cy="' + sy(s.value).toFixed(2) +
+      '" r="' + radius + '" fill="' + fill + '" style="cursor:pointer" onclick="curveSelectKey(' + s.time.toFixed(6) + ')" />';
   }).join('');
 
   var tc = Number(timeCode);
@@ -1979,6 +2134,8 @@ function _renderCurveFromState(timeCode) {
     + circles
     + '<text x="6" y="12" fill="#aaa" font-size="10">' + _curveEsc(attr.name) + ' (' + numeric.length + ' keys)</text>'
     + '<text x="6" y="' + (h - 4) + '" fill="#777" font-size="9">t:[' + tMin.toFixed(2) + ',' + tMax.toFixed(2) + ']  v:[' + vMin.toFixed(3) + ',' + vMax.toFixed(3) + ']</text>';
+
+  _updateCurveKeyStatus(attr, numeric);
 }
 
 async function loadCurvePanel(primPath, timeCode) {
@@ -2001,6 +2158,20 @@ async function loadCurvePanel(primPath, timeCode) {
 
   if (!animated.some(function(a) { return a.name === _curveState.selectedAttr; })) {
     _curveState.selectedAttr = animated[0].name;
+    _curveState.selectedKeyTime = null;
+    _curveState.selectedKeyValue = null;
+  }
+
+  var selectedAttrData = _getCurveAttrByName(_curveState.selectedAttr);
+  if (_curveState.selectedKeyTime != null && selectedAttrData) {
+    var hasSelectedKey = (selectedAttrData.samples || []).some(function(s) {
+      var t = Number(s.time);
+      return Number.isFinite(t) && Math.abs(t - Number(_curveState.selectedKeyTime)) < 1e-6;
+    });
+    if (!hasSelectedKey) {
+      _curveState.selectedKeyTime = null;
+      _curveState.selectedKeyValue = null;
+    }
   }
 
   var sec = document.createElement('div');
@@ -2030,8 +2201,54 @@ async function loadCurvePanel(primPath, timeCode) {
   select.value = _curveState.selectedAttr;
   select.addEventListener('change', function() {
     _curveState.selectedAttr = this.value;
+    _curveState.selectedKeyTime = null;
+    _curveState.selectedKeyValue = null;
     _renderCurveFromState(_curveState.currentTime);
   });
+
+  var controls = document.createElement('div');
+  controls.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:10px;';
+
+  var addBtn = document.createElement('button');
+  addBtn.textContent = '+ Key @ Current';
+  addBtn.style.fontSize = '10px';
+  addBtn.style.padding = '1px 6px';
+  addBtn.addEventListener('click', function() { curveAddKeyAtCurrent(); });
+
+  var delBtn = document.createElement('button');
+  delBtn.textContent = 'Delete Selected';
+  delBtn.style.fontSize = '10px';
+  delBtn.style.padding = '1px 6px';
+  delBtn.addEventListener('click', function() { curveDeleteSelectedKey(); });
+
+  var moveBtn = document.createElement('button');
+  moveBtn.textContent = 'Move Selected → Current';
+  moveBtn.style.fontSize = '10px';
+  moveBtn.style.padding = '1px 6px';
+  moveBtn.addEventListener('click', function() { curveMoveSelectedKeyToCurrent(); });
+
+  var valueLabel = document.createElement('span');
+  valueLabel.textContent = 'Value:';
+  valueLabel.style.color = 'var(--text2)';
+
+  var valueInput = document.createElement('input');
+  valueInput.id = 'curve-value-input';
+  valueInput.type = 'text';
+  valueInput.placeholder = 'number or JSON';
+  valueInput.style.cssText = 'width:160px;margin:0;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:10px;padding:1px 4px;border-radius:3px;';
+  if (_curveState.selectedKeyValue != null) valueInput.value = String(_curveState.selectedKeyValue);
+
+  var status = document.createElement('span');
+  status.id = 'curve-key-status';
+  status.style.cssText = 'color:var(--text2);font-size:10px;min-width:180px';
+  status.textContent = 'No key selected';
+
+  controls.appendChild(addBtn);
+  controls.appendChild(delBtn);
+  controls.appendChild(moveBtn);
+  controls.appendChild(valueLabel);
+  controls.appendChild(valueInput);
+  controls.appendChild(status);
 
   var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('id', 'curve-svg');
@@ -2043,6 +2260,7 @@ async function loadCurvePanel(primPath, timeCode) {
   svg.style.background = '#1d1d1d';
 
   body.appendChild(select);
+  body.appendChild(controls);
   body.appendChild(svg);
   sec.appendChild(hdr);
   sec.appendChild(body);
