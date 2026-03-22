@@ -615,11 +615,12 @@
     <span style="flex:1"></span>
     <button onclick="cmdUndo()" title="Undo (Ctrl+Z)">↶</button>
     <button onclick="cmdRedo()" title="Redo (Ctrl+Shift+Z)">↷</button>
-    <button onclick="frameAll() || (_pendingFrame=true)" title="Frame all (F)">⊡ Frame</button>
+    <button onclick="frameSelectedOrAll() || (_pendingFrame=true)" title="Frame selected (F), frame all (Shift+F)">⊡ Frame</button>
     <button onclick="reloadStage()" title="Reload USD from server">↻ Reload</button>
     <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
     <button onclick="toggleWireframe()" title="Toggle wireframe (Z)">◇ Wire</button>
     <button onclick="toggleGrid()" title="Toggle grid/axes (G)">⊞ Grid</button>
+    <button id="btn-upaxis-mode" onclick="toggleUpAxisMode()" title="Up-axis remap: Auto/Force Y-up/Native">Y↑ Auto</button>
     <button onclick="setViewPreset('front')" title="Front view (1)">F</button>
     <button onclick="setViewPreset('right')" title="Right view (3)">R</button>
     <button onclick="setViewPreset('top')" title="Top view (7)">T</button>
@@ -1266,61 +1267,95 @@ function resizeViewport() {
 new ResizeObserver(resizeViewport).observe(vpWrap);
 resizeViewport();
 
-// ── Frame all ─────────────────────────────────────────────────────────────
-window.frameAll = function () {
-  // Collect bounding box ONLY from mesh objects inside usdRoot
-  // (avoids helper objects, empty groups, cameras, etc.)
-  const box = new THREE.Box3();
-  let hasMesh = false;
-  usdRoot.traverse(obj => {
-    if (obj.isMesh && obj.geometry) {
-      obj.geometry.computeBoundingBox();
-      const meshBox = obj.geometry.boundingBox.clone();
-      meshBox.applyMatrix4(obj.matrixWorld);
-      box.expandByObject(obj);
-      hasMesh = true;
-    }
-  });
-  if (!hasMesh || box.isEmpty()) return false;
-
-  const size   = box.getSize(new THREE.Vector3());
+// ── Frame all / selection ─────────────────────────────────────────────────
+function _frameBox(box, logTag) {
+  if (!box || box.isEmpty()) return false;
+  const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  if (isNaN(size.x) || size.length() === 0) return false;
+  if (!Number.isFinite(size.x) || size.length() === 0) return false;
 
-  // Bounding sphere radius (half-diagonal of the AABB)
   const radius = size.length() * 0.5;
-
-  // Distance that fits the bounding sphere inside the vertical FOV
-  // with a 1.6× comfort margin so the object doesn't touch the edges.
   const vFov = camera.fov * (Math.PI / 180);
   const dist = (radius / Math.tan(vFov / 2)) * 1.6;
 
   controls.target.copy(center);
-  // Position: offset at ~45° azimuth + ~30° elevation
-  camera.position.copy(center).add(
-    new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66)
-  );
-  // Explicitly orient the camera before OrbitControls takes over
+  camera.position.copy(center).add(new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66));
   camera.lookAt(center);
   camera.near = Math.max(0.01, dist / 500);
-  camera.far  = dist * 200;
+  camera.far = dist * 200;
   camera.updateProjectionMatrix();
   controls.maxDistance = dist * 20;
   controls.update();
-  console.log('[frameAll] OK — center:', center.toArray().map(v=>v.toFixed(2)),
+
+  console.log('[' + logTag + '] OK — center:', center.toArray().map(v => v.toFixed(2)),
               'radius:', radius.toFixed(2), 'dist:', dist.toFixed(2),
-              'cam:', camera.position.toArray().map(v=>v.toFixed(2)),
-              'target:', controls.target.toArray().map(v=>v.toFixed(2)),
+              'cam:', camera.position.toArray().map(v => v.toFixed(2)),
+              'target:', controls.target.toArray().map(v => v.toFixed(2)),
               'aspect:', camera.aspect.toFixed(3),
               'canvas:', renderer.domElement.width + '×' + renderer.domElement.height,
               'dpr:', renderer.getPixelRatio());
   return true;
+}
+
+function _objMatchesPrimPath(obj, primPath) {
+  if (!obj || !primPath) return false;
+  var n = String(obj.name || '');
+  var ud = obj.userData || {};
+  return (
+    ud.path === primPath ||
+    obj._primPath === primPath ||
+    n === primPath ||
+    n.endsWith(primPath) ||
+    ('/' + n) === primPath ||
+    n === primPath.split('/').pop()
+  );
+}
+
+window.frameSelection = function() {
+  var selected = Array.isArray(window._selectedPaths) ? window._selectedPaths : [];
+  if (!selected.length) return false;
+
+  const box = new THREE.Box3();
+  let hasMesh = false;
+
+  usdRoot.traverse(obj => {
+    if (!obj || !obj.isMesh || !obj.geometry) return;
+    for (var i = 0; i < selected.length; i++) {
+      if (_objMatchesPrimPath(obj, selected[i])) {
+        box.expandByObject(obj);
+        hasMesh = true;
+        break;
+      }
+    }
+  });
+
+  if (!hasMesh) return false;
+  return _frameBox(box, 'frameSelection');
+};
+
+window.frameAll = function () {
+  const box = new THREE.Box3();
+  let hasMesh = false;
+  usdRoot.traverse(obj => {
+    if (obj.isMesh && obj.geometry) {
+      box.expandByObject(obj);
+      hasMesh = true;
+    }
+  });
+  if (!hasMesh) return false;
+  return _frameBox(box, 'frameAll');
+};
+
+window.frameSelectedOrAll = function() {
+  return window.frameSelection() || window.frameAll();
 };
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'f' || e.key === 'F') {
-    window.frameAll();
+    if (e.shiftKey) window.frameAll();
+    else window.frameSelectedOrAll();
+    e.preventDefault();
   }
   // Gizmo mode shortcuts
   if (e.key === 'w' || e.key === 'W') { gizmo.setMode('translate'); }
@@ -1343,6 +1378,43 @@ let _timeCodesPerSecond = 24;
 let _pendingFrame = false;      // set true → animate loop will frameAll after next Draw()
 let _loading      = false;      // prevents concurrent loadStage calls
 let _currentTimeCode = 0;
+let _stageUpAxis = 'y';
+let _upAxisMode = 'auto'; // auto | forceY | native
+
+function _syncUpAxisModeUi() {
+  var btn = document.getElementById('btn-upaxis-mode');
+  if (!btn) return;
+  if (_upAxisMode === 'auto') {
+    btn.textContent = 'Y↑ Auto';
+    btn.classList.remove('primary');
+  } else if (_upAxisMode === 'forceY') {
+    btn.textContent = 'Y↑ Force';
+    btn.classList.add('primary');
+  } else {
+    btn.textContent = 'Y↑ Native';
+    btn.classList.remove('primary');
+  }
+}
+
+function _applyUpAxisMode() {
+  var shouldRotate = false;
+  if (_upAxisMode === 'forceY') shouldRotate = true;
+  else if (_upAxisMode === 'native') shouldRotate = false;
+  else shouldRotate = (_stageUpAxis === 'z');
+
+  usdRoot.rotation.x = shouldRotate ? -Math.PI / 2 : 0;
+  _syncUpAxisModeUi();
+}
+
+function toggleUpAxisMode() {
+  if (_upAxisMode === 'auto') _upAxisMode = 'forceY';
+  else if (_upAxisMode === 'forceY') _upAxisMode = 'native';
+  else _upAxisMode = 'auto';
+  _applyUpAxisMode();
+  window.setStatus?.('Up-axis mode: ' + _upAxisMode);
+}
+window.toggleUpAxisMode = toggleUpAxisMode;
+_syncUpAxisModeUi();
 
 function _clampTimeCode(tc) {
   const n = Number(tc);
@@ -1691,7 +1763,8 @@ async function loadStage(reframe = true) {
       upAxisRaw = null;
     }
     const upAxis = _normalizeUpAxisToken(upAxisRaw);
-    usdRoot.rotation.x = (upAxis === 'z') ? -Math.PI / 2 : 0;
+    _stageUpAxis = upAxis;
+    _applyUpAxisMode();
 
     const startTimeCode = stage.GetStartTimeCode ? Number(stage.GetStartTimeCode()) : 0;
     const endTimeCode = stage.GetEndTimeCode ? Number(stage.GetEndTimeCode()) : (startTimeCode + 100);
@@ -2689,10 +2762,22 @@ async function cmdUndo() { await api('/api/undo', 'POST'); }
 async function cmdRedo() { await api('/api/redo', 'POST'); }
 window.cmdUndo = cmdUndo; window.cmdRedo = cmdRedo;
 
-document.addEventListener('keydown', function(ev) {
-  if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA') return;
+function _isEditableHotkeyTarget(target) {
+  if (!target) return false;
+  var tag = String(target.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (target.isContentEditable) return true;
+  if (target.closest && (target.closest('.CodeMirror') || target.closest('#script-panel'))) return true;
+  return false;
+}
 
-  if ((ev.key === 'Delete' || ev.key === 'Backspace') && _nodeWorkbenchState.open) {
+window.addEventListener('keydown', function(ev) {
+  if (_isEditableHotkeyTarget(ev.target)) return;
+
+  var key = String(ev.key || '').toLowerCase();
+  var mod = !!(ev.ctrlKey || ev.metaKey);
+
+  if ((key === 'delete' || key === 'backspace') && _nodeWorkbenchState.open) {
     var node = _nodeGetSelectedLiteNode();
     if (node && !node.__isMaterial) {
       _deleteSelectedNodeInWorkbench();
@@ -2701,16 +2786,16 @@ document.addEventListener('keydown', function(ev) {
     }
   }
 
-  if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSelected(); ev.preventDefault(); }
-  if (ev.key === 'd' && (ev.ctrlKey || ev.metaKey)) { duplicateSelected(); ev.preventDefault(); }
-  if (ev.key === 'g' && (ev.ctrlKey || ev.metaKey)) { groupSelected(); ev.preventDefault(); }
-  if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey) { cmdUndo(); ev.preventDefault(); }
-  if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) { cmdRedo(); ev.preventDefault(); }
-  if (ev.key === 'ArrowLeft') { if (typeof stepTimeline === 'function') stepTimeline(ev.shiftKey ? -10 : -1); ev.preventDefault(); }
-  if (ev.key === 'ArrowRight') { if (typeof stepTimeline === 'function') stepTimeline(ev.shiftKey ? 10 : 1); ev.preventDefault(); }
-  if (ev.key === 'h' || ev.key === 'H') { toggleVisibilitySelected(); }
-  if (ev.key === 'F2') { renameSelected(); }
-});
+  if (key === 'delete' || key === 'backspace') { deleteSelected(); ev.preventDefault(); return; }
+  if (key === 'd' && mod) { duplicateSelected(); ev.preventDefault(); return; }
+  if (key === 'g' && mod) { groupSelected(); ev.preventDefault(); return; }
+  if (key === 'z' && mod && !ev.shiftKey) { cmdUndo(); ev.preventDefault(); return; }
+  if ((key === 'z' && mod && ev.shiftKey) || (key === 'y' && mod)) { cmdRedo(); ev.preventDefault(); return; }
+  if (key === 'arrowleft') { if (typeof stepTimeline === 'function') stepTimeline(ev.shiftKey ? -10 : -1); ev.preventDefault(); return; }
+  if (key === 'arrowright') { if (typeof stepTimeline === 'function') stepTimeline(ev.shiftKey ? 10 : 1); ev.preventDefault(); return; }
+  if (key === 'h') { toggleVisibilitySelected(); return; }
+  if (ev.key === 'F2') { renameSelected(); return; }
+}, true);
 
 // ── Properties (categorized) ──────────────────────────────────────────────
 function categorizeAttr(name) {
