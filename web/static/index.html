@@ -819,11 +819,18 @@ import { ThreeRenderDelegateInterface }
         return _assetsPromise;
       }
 
-      async function _resolveAltTexturePath(resourcePath) {
-        var p = String(resourcePath || '')
+      function _sanitizeTexPath(rawPath) {
+        return String(rawPath || '')
+          .trim()
+          .replace(/^@+|@+$/g, '')
           .replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '')
           .replace(/^\.\//, '')
-          .replace(/^\//, '');
+          .replace(/^\//, '')
+          .replace(/\\/g, '/');
+      }
+
+      async function _resolveAltTexturePath(resourcePath) {
+        var p = _sanitizeTexPath(resourcePath);
         if (!p) return null;
 
         var info = await _getAssets();
@@ -854,7 +861,7 @@ import { ThreeRenderDelegateInterface }
       }
 
       reg.getTexture = function(resourcePath) {
-        var rp = String(resourcePath || '').replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '');
+        var rp = _sanitizeTexPath(resourcePath);
         return _origGetTexture(rp).catch(async function(err) {
           var alt = await _resolveAltTexturePath(rp);
           if (!alt || alt === rp) throw err;
