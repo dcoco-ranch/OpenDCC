@@ -803,6 +803,69 @@ import { ThreeRenderDelegateInterface }
     } catch (_) {}
   }
 
+  function _patchTextureRegistry(iface) {
+    try {
+      var reg = iface && iface.registry;
+      if (!reg || reg.__opendccPatched || typeof reg.getTexture !== 'function') return;
+
+      var _origGetTexture = reg.getTexture.bind(reg);
+      var _assetsPromise = null;
+
+      async function _getAssets() {
+        if (_assetsPromise) return _assetsPromise;
+        _assetsPromise = fetch('/api/stage/assets', { cache: 'no-store' })
+          .then(function(r) { return r.ok ? r.json() : { assets: [] }; })
+          .catch(function() { return { assets: [] }; });
+        return _assetsPromise;
+      }
+
+      async function _resolveAltTexturePath(resourcePath) {
+        var p = String(resourcePath || '')
+          .replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '')
+          .replace(/^\.\//, '')
+          .replace(/^\//, '');
+        if (!p) return null;
+
+        var info = await _getAssets();
+        var assets = Array.isArray(info.assets) ? info.assets : [];
+
+        if (assets.indexOf(p) >= 0) return p;
+
+        if (!p.startsWith('assets/')) {
+          var withAssets = 'assets/' + p;
+          if (assets.indexOf(withAssets) >= 0) return withAssets;
+        }
+
+        var base = p.split('/').pop().toLowerCase();
+        var cands = assets.filter(function(a) {
+          var al = String(a || '').toLowerCase();
+          return al === base || al.endsWith('/' + base);
+        });
+
+        cands.sort(function(a, b) {
+          var ap = String(a || '');
+          var bp = String(b || '');
+          var as = ap.indexOf('/tex/') >= 0 ? 0 : 1;
+          var bs = bp.indexOf('/tex/') >= 0 ? 0 : 1;
+          return (as - bs) || (ap.length - bp.length);
+        });
+
+        return cands.length ? cands[0] : null;
+      }
+
+      reg.getTexture = function(resourcePath) {
+        var rp = String(resourcePath || '').replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '');
+        return _origGetTexture(rp).catch(async function(err) {
+          var alt = await _resolveAltTexturePath(rp);
+          if (!alt || alt === rp) throw err;
+          return _origGetTexture(alt);
+        });
+      };
+
+      reg.__opendccPatched = true;
+    } catch (_) {}
+  }
+
   function _applyStandardSurfaceAliases(node) {
     if (!node) return;
     _aliasNodeParam(node, 'diffuseColor', 'base_color');
@@ -819,6 +882,7 @@ import { ThreeRenderDelegateInterface }
     proto.createRPrim = function(typeId, id, instancerId) {
       var prim = _origCreateRPrim.call(this, typeId, id, instancerId);
       try {
+        _patchTextureRegistry(this);
         if (!prim || typeof prim.setMaterial !== 'function' || prim.__opendccMatPatched) return prim;
 
         var _origSetMaterial = prim.setMaterial;
@@ -855,6 +919,7 @@ import { ThreeRenderDelegateInterface }
       proto.createSPrim = function(typeId, id) {
         var s = _origCreateSPrim.call(this, typeId, id);
         try {
+          _patchTextureRegistry(this);
           if (!s || s.__opendccMtlxPatched) return s;
 
           if (typeof s.updateNode === 'function') {
