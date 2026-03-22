@@ -2228,7 +2228,13 @@ def _node_iter_material_outputs(mat):
                 continue
 
             ui_name = terminal if not context else f"{terminal}@{context}"
-            key = (ui_name, str(out.GetPath()))
+            out_key = ""
+            try:
+                attr2 = out.GetAttr()
+                out_key = str(attr2.GetPath()) if attr2 else ""
+            except Exception:
+                out_key = ""
+            key = (ui_name, out_key or terminal)
             if key in seen:
                 continue
             seen.add(key)
@@ -2252,7 +2258,13 @@ def _node_iter_material_outputs(mat):
         if not out:
             continue
         ui_name = terminal
-        key = (ui_name, str(out.GetPath()))
+        out_key = ""
+        try:
+            attr2 = out.GetAttr()
+            out_key = str(attr2.GetPath()) if attr2 else ""
+        except Exception:
+            out_key = ""
+        key = (ui_name, out_key or terminal)
         if key in seen:
             continue
         seen.add(key)
