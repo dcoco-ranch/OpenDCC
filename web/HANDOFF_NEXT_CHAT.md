@@ -18,6 +18,7 @@ Branch: `develop`
 - Curve Editor in separate panel (not in Properties).
 - Resizable layout splitters + persisted panel sizes.
 - Viewport panel presets: 1V / 2V / 3V / 4V (multi-camera scissor render).
+- Script Editor upgraded with CodeMirror Python highlighting + basic autocomplete + fallback textarea mode.
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key

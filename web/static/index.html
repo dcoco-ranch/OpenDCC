@@ -25,6 +25,14 @@
   -->
   <script type="module" src="https://unpkg.com/three@0.163.0/build/three.module.js"></script>
 
+  <!-- Script editor: CodeMirror (optional, textarea fallback if unavailable) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+
   <style>
     /* ── Reset ─────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -288,6 +296,17 @@
       border: none; resize: none;
       font: 13px/1.5 "Fira Code", "Cascadia Code", monospace;
       padding: 10px; outline: none;
+    }
+    .CodeMirror {
+      flex: 1;
+      height: auto;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font: 13px/1.5 "Fira Code", "Cascadia Code", monospace;
+    }
+    .CodeMirror-gutters {
+      background: #1a1a1a;
+      border-right: 1px solid #2d2d2d;
     }
     #script-output {
       height: 120px; background: #111; color: #aaa;
@@ -2693,27 +2712,156 @@ window.startAttrEdit = startAttrEdit;
 // ── Script editor ──────────────────────────────────────────────────────────
 const _scriptHistory = [];
 let _scriptHistIdx = -1;
+let _scriptCM = null;
+
+const _scriptHintCatalog = {
+  globals: [
+    'app', 'session', 'stage', 'usd_context',
+    'Usd', 'UsdGeom', 'UsdShade', 'Sdf', 'Gf', 'Tf', 'Vt',
+  ],
+  keywords: [
+    'import', 'from', 'as', 'def', 'class', 'return', 'if', 'elif', 'else',
+    'for', 'while', 'try', 'except', 'finally', 'with', 'yield', 'lambda',
+    'True', 'False', 'None',
+  ],
+  stage: [
+    'GetPrimAtPath(', 'Traverse()', 'TraverseAll()', 'GetRootLayer()',
+    'GetEditTarget()', 'SetEditTarget(', 'Save()', 'Export(',
+  ],
+  prim: [
+    'GetPath()', 'GetTypeName()', 'IsValid()', 'GetAttribute(',
+    'CreateAttribute(', 'GetRelationships()', 'GetChildren()',
+  ],
+  UsdGeom: [
+    'Xform', 'Mesh', 'Sphere', 'Cube', 'BasisCurves', 'Imageable',
+  ],
+  UsdShade: [
+    'Material', 'Shader', 'NodeGraph',
+  ],
+};
+
+function _scriptEditorElem() {
+  return document.getElementById('script-editor');
+}
+
+function _getScriptCode() {
+  if (_scriptCM) return _scriptCM.getValue();
+  const el = _scriptEditorElem();
+  return el ? el.value : '';
+}
+
+function _setScriptCode(code) {
+  const value = String(code || '');
+  if (_scriptCM) _scriptCM.setValue(value);
+  const el = _scriptEditorElem();
+  if (el) el.value = value;
+}
+
+function _focusScriptEditor() {
+  if (_scriptCM) _scriptCM.focus();
+  else _scriptEditorElem()?.focus();
+}
+
+function _escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function _setScriptHistory(delta) {
+  if (_scriptHistory.length <= 0) return;
+  _scriptHistIdx = _clamp(_scriptHistIdx + delta, 0, _scriptHistory.length);
+  _setScriptCode(_scriptHistory[_scriptHistIdx] || '');
+}
+
+function _scriptCodeMirrorHint(editor) {
+  const cur = editor.getCursor();
+  const line = editor.getLine(cur.line).slice(0, cur.ch);
+  const m = line.match(/([A-Za-z_][A-Za-z0-9_\.]*)$/);
+  const token = m ? m[1] : '';
+
+  let list = [];
+  const dot = token.lastIndexOf('.');
+  if (dot > 0) {
+    const head = token.slice(0, dot);
+    const tail = token.slice(dot + 1).toLowerCase();
+    const pool = _scriptHintCatalog[head] || [];
+    list = pool.filter(v => v.toLowerCase().startsWith(tail));
+  } else {
+    const prefix = token.toLowerCase();
+    const pool = []
+      .concat(_scriptHintCatalog.globals)
+      .concat(_scriptHintCatalog.keywords)
+      .concat(['print(', 'len(', 'range(', 'list(', 'dict(', 'set(', 'tuple(']);
+    list = pool.filter(v => v.toLowerCase().startsWith(prefix));
+  }
+
+  return {
+    list: Array.from(new Set(list)).sort(),
+    from: window.CodeMirror.Pos(cur.line, cur.ch - token.length),
+    to: window.CodeMirror.Pos(cur.line, cur.ch),
+  };
+}
+
+function initScriptEditor() {
+  const textarea = _scriptEditorElem();
+  if (!textarea || _scriptCM) return;
+  if (!window.CodeMirror) return;
+
+  _scriptCM = window.CodeMirror.fromTextArea(textarea, {
+    mode: 'python',
+    theme: 'material-darker',
+    lineNumbers: true,
+    indentUnit: 4,
+    tabSize: 4,
+    indentWithTabs: false,
+    matchBrackets: true,
+    autofocus: false,
+    extraKeys: {
+      'Ctrl-Enter': function() { runScript(); },
+      'Cmd-Enter': function() { runScript(); },
+      'Ctrl-Space': function(cm) {
+        if (window.CodeMirror.showHint) {
+          window.CodeMirror.showHint(cm, _scriptCodeMirrorHint, { completeSingle: false });
+        }
+      },
+      'Ctrl-Up': function() { _setScriptHistory(-1); },
+      'Ctrl-Down': function() { _setScriptHistory(1); },
+    },
+  });
+
+  _scriptCM.on('inputRead', function(cm, change) {
+    if (!change || !change.text || change.text.length !== 1) return;
+    const ch = change.text[0];
+    if (!/[A-Za-z_.]/.test(ch)) return;
+    if (window.CodeMirror.showHint) {
+      window.CodeMirror.showHint(cm, _scriptCodeMirrorHint, { completeSingle: false });
+    }
+  });
+}
 
 function toggleScript() {
   document.getElementById('script-panel').classList.toggle('open');
   if (document.getElementById('script-panel').classList.contains('open')) {
-    document.getElementById('script-editor').focus();
+    initScriptEditor();
+    _focusScriptEditor();
   }
 }
+
 function clearScript() {
-  document.getElementById('script-editor').value = '';
+  _setScriptCode('');
   document.getElementById('script-output').innerHTML = '';
 }
+
 async function runScript() {
-  const editor = document.getElementById('script-editor');
-  const code = editor.value;
+  const code = _getScriptCode();
   if (!code.trim()) return;
   const out = document.getElementById('script-output');
-  out.innerHTML += '<span style="color:#888">>>> ' + code.split('\n')[0] + (code.includes('\n') ? '...' : '') + '</span>\n';
+  out.innerHTML += '<span style="color:#888">>>> ' + _escapeHtml(code.split('\n')[0]) + (code.includes('\n') ? '...' : '') + '</span>\n';
   out.innerHTML += '<span style="color:#666">Running…</span>\n';
   out.scrollTop = out.scrollHeight;
 
-  // Save to history
   if (_scriptHistory[_scriptHistory.length - 1] !== code) {
     _scriptHistory.push(code);
     if (_scriptHistory.length > 50) _scriptHistory.shift();
@@ -2721,35 +2869,28 @@ async function runScript() {
   _scriptHistIdx = _scriptHistory.length;
 
   const res = await api('/api/execute', 'POST', { code });
-  // Remove "Running…" line
   const lines = out.innerHTML.split('\n');
   lines.pop(); lines.pop();
   out.innerHTML = lines.join('\n') + '\n';
 
-  if (res.output) out.innerHTML += '<span style="color:#d4d4d4">' + res.output.replace(/</g, '&lt;') + '</span>';
-  if (res.error)  out.innerHTML += '<span style="color:#f44">' + res.error.replace(/</g, '&lt;') + '</span>';
+  if (res.output) out.innerHTML += '<span style="color:#d4d4d4">' + _escapeHtml(res.output) + '</span>';
+  if (res.error)  out.innerHTML += '<span style="color:#f44">' + _escapeHtml(res.error) + '</span>';
   if (res.ok && !res.output && !res.error) out.innerHTML += '<span style="color:#4c4">OK</span>\n';
   out.scrollTop = out.scrollHeight;
 }
 
-// Ctrl+Enter to run, Up/Down for history
+// Fallback shortcuts when CodeMirror is unavailable
 document.getElementById('script-editor')?.addEventListener('keydown', function(e) {
+  if (_scriptCM) return;
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runScript(); }
-  if (e.key === 'ArrowUp' && e.ctrlKey && _scriptHistory.length > 0) {
-    e.preventDefault();
-    _scriptHistIdx = Math.max(0, _scriptHistIdx - 1);
-    this.value = _scriptHistory[_scriptHistIdx] || '';
-  }
-  if (e.key === 'ArrowDown' && e.ctrlKey) {
-    e.preventDefault();
-    _scriptHistIdx = Math.min(_scriptHistory.length, _scriptHistIdx + 1);
-    this.value = _scriptHistory[_scriptHistIdx] || '';
-  }
+  if (e.key === 'ArrowUp' && e.ctrlKey) { e.preventDefault(); _setScriptHistory(-1); }
+  if (e.key === 'ArrowDown' && e.ctrlKey) { e.preventDefault(); _setScriptHistory(1); }
 });
 
 window.toggleScript = toggleScript;
 window.clearScript  = clearScript;
 window.runScript    = runScript;
+window.initScriptEditor = initScriptEditor;
 
 // ── Export downloads ──────────────────────────────────────────────────────
 async function downloadUSDA() {
@@ -2966,8 +3107,9 @@ window.takeSnapshot = takeSnapshot;
 // WebSocket connected handler (above) takes care of:
 //   - GPU detection + Snapshot button
 //   - Stage info + Outliner refresh
-// This block initializes layout + starts WS connection.
+// This block initializes layout + editor + starts WS connection.
 initPanelSplitters();
+initScriptEditor();
 connectWS();
 </script>
 </body>

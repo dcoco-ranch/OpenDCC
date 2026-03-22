@@ -109,10 +109,10 @@
 - [ ] Connection drag & drop entre nodes
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)
-- [ ] Syntax highlighting Python (CodeMirror ou Monaco Editor)
-- [ ] Autocomplétion basique (`stage.`, `prim.`, `UsdGeom.`)
-- [ ] Historique des commandes
-- [ ] Accès aux globals `app`, `session`, `stage`
+- [x] Syntax highlighting Python (CodeMirror, fallback textarea si CDN indisponible)
+- [x] Autocomplétion basique (`stage.`, `prim.`, `UsdGeom.`)
+- [x] Historique des commandes
+- [x] Accès aux globals `app`, `session`, `stage`
 
 ---
 
