@@ -96,6 +96,8 @@
 ### 4.1 — Material Editor web (remplace `opendcc.usd_editor.material_editor`)
 - [x] Lecture des `UsdShade` bindings et affichage en panneau dédié
 - [x] Édition des paramètres `UsdPreviewSurface` (color, metallic, roughness, opacity)
+- [x] Entrée des textures (slots principaux) + connexion/déconnexion `UsdUVTexture`
+- [x] Création + binding rapide d’un matériau sur prim sans matériau
 - [x] Preview matériau temps réel dans le viewport
 
 ### 4.2 — UV Editor web (remplace `opendcc.usd_editor.uv_editor`)

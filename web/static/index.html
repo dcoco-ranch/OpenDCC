@@ -2224,6 +2224,17 @@ function _formatVec3(vec) {
   return '(' + vec.map(function(v) { return (Number(v) || 0).toFixed(3); }).join(', ') + ')';
 }
 
+function _isTextureSlot(name) {
+  return /diffusecolor|basecolor|emissivecolor|roughness|metallic|opacity|normal|occlusion|clearcoat/i.test(String(name || ''));
+}
+
+function _materialTextureSlots(params) {
+  var base = ['diffuseColor', 'emissiveColor', 'roughness', 'metallic', 'opacity', 'normal', 'occlusion'];
+  var keys = Object.keys(params || {});
+  keys.forEach(function(k) { if (_isTextureSlot(k) && base.indexOf(k) < 0) base.push(k); });
+  return base;
+}
+
 function _foreachPreviewMaterial(fn) {
   var target = (window._gizmo && window._gizmo.object) ? window._gizmo.object : window._usdRoot;
   if (!target) return;
@@ -2263,6 +2274,18 @@ function _applyMaterialPreview(paramName, value) {
   });
 }
 
+async function bindDefaultMaterial(primPath) {
+  if (!primPath) return false;
+  var res = await api('/api/material/bind', 'POST', {
+    prim_path: primPath,
+    create_if_missing: true,
+  });
+  if (!res || !res.ok) return false;
+  setStatus('Material bound: ' + (res.materialPath || ''));
+  await loadMaterialPanel(primPath, Number(window._currentTimeCode));
+  return true;
+}
+
 // Set a UsdPreviewSurface parameter
 async function setMaterialParam(materialPath, paramName, value, opts) {
   opts = opts || {};
@@ -2280,7 +2303,80 @@ async function setMaterialParam(materialPath, paramName, value, opts) {
   return true;
 }
 
-// ── Material editor panel (UsdPreviewSurface params) ─────────────────────
+async function setMaterialTexture(materialPath, paramName, assetPath, opts) {
+  opts = opts || {};
+  var key = materialPath.replace(/^\//, '');
+  var res = await api('/api/material/' + key + '/texture', 'POST', {
+    param: paramName,
+    asset_path: String(assetPath || ''),
+    st_primvar: 'st',
+  });
+  if (!res || !res.ok) return false;
+
+  setStatus((assetPath ? 'Texture set: ' : 'Texture cleared: ') + paramName);
+  if (!opts.skipPanelRefresh && _inspectorTab === 'material' && _selectedPaths.length) {
+    var path = _selectedPaths[_selectedPaths.length - 1];
+    if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+  }
+  return true;
+}
+
+function _appendTextureSlotRow(tbl, mat, slotName, texInfo) {
+  var tr = document.createElement('tr');
+  var td1 = document.createElement('td');
+  td1.style.cssText = 'padding:4px 8px;border-bottom:1px solid #3a3a3a;color:var(--text2);width:36%';
+  td1.textContent = slotName;
+
+  var td2 = document.createElement('td');
+  td2.style.cssText = 'padding:4px 8px;border-bottom:1px solid #3a3a3a';
+
+  var wrap = document.createElement('div');
+  wrap.className = 'mat-control';
+
+  var pathInput = document.createElement('input');
+  pathInput.type = 'text';
+  pathInput.placeholder = 'texture path (stage-relative or absolute)';
+  pathInput.style.margin = '0';
+  pathInput.value = (texInfo && texInfo.assetPath) ? texInfo.assetPath : '';
+
+  var setBtn = document.createElement('button');
+  setBtn.textContent = 'Set';
+  setBtn.style.padding = '1px 6px';
+  setBtn.style.fontSize = '10px';
+  setBtn.addEventListener('click', function() {
+    setMaterialTexture(mat.materialPath, slotName, pathInput.value, { skipPanelRefresh: false });
+  });
+
+  var clrBtn = document.createElement('button');
+  clrBtn.textContent = 'Clear';
+  clrBtn.style.padding = '1px 6px';
+  clrBtn.style.fontSize = '10px';
+  clrBtn.addEventListener('click', function() {
+    pathInput.value = '';
+    setMaterialTexture(mat.materialPath, slotName, '', { skipPanelRefresh: false });
+  });
+
+  pathInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') setBtn.click();
+  });
+
+  wrap.appendChild(pathInput);
+  wrap.appendChild(setBtn);
+  wrap.appendChild(clrBtn);
+  td2.appendChild(wrap);
+
+  if (texInfo && texInfo.shaderId) {
+    var meta = document.createElement('div');
+    meta.style.cssText = 'color:var(--text2);font-size:10px;margin-top:3px';
+    meta.textContent = 'connected: ' + texInfo.shaderId + ' (' + (texInfo.output || '?') + ')';
+    td2.appendChild(meta);
+  }
+
+  tr.append(td1, td2);
+  tbl.appendChild(tr);
+}
+
+// ── Material editor panel (UsdPreviewSurface + texture slots) ────────────
 async function loadMaterialPanel(primPath, timeCode) {
   var host = document.getElementById('material-scroll');
   if (!host) return;
@@ -2305,8 +2401,21 @@ async function loadMaterialPanel(primPath, timeCode) {
   var mat = await api(matUrl);
   if (!mat.bound) {
     var msg = document.createElement('div');
-    msg.style.cssText = 'padding:8px;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:4px';
-    msg.textContent = 'No bound material found on selected prim.';
+    msg.style.cssText = 'padding:8px;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:4px;display:flex;flex-direction:column;gap:8px';
+    msg.innerHTML = 'No bound material found on selected prim.';
+
+    var btn = document.createElement('button');
+    btn.className = 'primary';
+    btn.style.cssText = 'width:max-content;padding:2px 8px;font-size:11px';
+    btn.textContent = '+ Create & Bind UsdPreviewSurface';
+    btn.addEventListener('click', function() { bindDefaultMaterial(primPath); });
+    msg.appendChild(btn);
+
+    var hint = document.createElement('div');
+    hint.style.cssText = 'color:var(--text2);font-size:10px';
+    hint.textContent = 'MaterialX / vendor materials: detection ready; dedicated editors planned.';
+    msg.appendChild(hint);
+
     host.appendChild(msg);
     return;
   }
@@ -2315,7 +2424,9 @@ async function loadMaterialPanel(primPath, timeCode) {
   sec.className = 'attr-section';
   var hdr = document.createElement('div');
   hdr.className = 'attr-section-header';
-  hdr.innerHTML = '<span class="toggle">▾</span> Material Editor <span class="mat-tag">UsdPreviewSurface</span>'
+
+  var shaderTag = (mat.editablePreviewSurface ? 'UsdPreviewSurface' : 'Read-only shading');
+  hdr.innerHTML = '<span class="toggle">▾</span> Material Editor <span class="mat-tag">' + shaderTag + '</span>'
     + '<span style="color:var(--accent);font-size:10px;margin-left:auto">' + mat.materialPath + '</span>';
   hdr.addEventListener('click', function() {
     var b = sec.querySelector('.attr-section-body');
@@ -2325,10 +2436,38 @@ async function loadMaterialPanel(primPath, timeCode) {
 
   var body = document.createElement('div');
   body.className = 'attr-section-body';
-  var tbl = document.createElement('table');
-  tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
+
+  var shaderInfo = document.createElement('div');
+  shaderInfo.style.cssText = 'padding:6px 8px;color:var(--text2);font-size:10px;border-bottom:1px solid #3a3a3a';
+  var ids = (mat.shaderIds && mat.shaderIds.length) ? mat.shaderIds.join(', ') : 'none';
+  shaderInfo.innerHTML = 'Shaders: ' + ids
+    + (mat.hasMaterialX ? ' <span class="mat-tag">MaterialX present</span>' : '')
+    + (mat.hasVendorShaders ? ' <span class="mat-tag">Vendor shader(s) present</span>' : '');
+  body.appendChild(shaderInfo);
+
+  if (!mat.editablePreviewSurface) {
+    var ro = document.createElement('div');
+    ro.style.cssText = 'padding:8px;color:var(--text2);font-size:11px';
+    ro.textContent = 'No UsdPreviewSurface found on this material. Use a dedicated MaterialX/vendor editor (planned) or bind a PreviewSurface material for quick edits.';
+    body.appendChild(ro);
+
+    var bindBtn = document.createElement('button');
+    bindBtn.textContent = '+ Create & Bind PreviewSurface';
+    bindBtn.style.cssText = 'margin:0 8px 8px 8px;padding:2px 8px;font-size:11px';
+    bindBtn.addEventListener('click', function() { bindDefaultMaterial(primPath); });
+    body.appendChild(bindBtn);
+
+    sec.appendChild(hdr);
+    sec.appendChild(body);
+    host.appendChild(sec);
+    return;
+  }
 
   var params = mat.params || {};
+  var textures = mat.textures || {};
+
+  var tbl = document.createElement('table');
+  tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
   var names = Object.keys(params).sort();
   if (!names.length) {
     var empty = document.createElement('div');
@@ -2456,9 +2595,34 @@ async function loadMaterialPanel(primPath, timeCode) {
   });
 
   body.appendChild(tbl);
+
+  var texSec = document.createElement('div');
+  texSec.className = 'attr-section';
+  var texHdr = document.createElement('div');
+  texHdr.className = 'attr-section-header';
+  texHdr.innerHTML = '<span class="toggle">▾</span> Texture Inputs';
+  texHdr.addEventListener('click', function() {
+    var b = texSec.querySelector('.attr-section-body');
+    b.classList.toggle('collapsed');
+    texHdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '▸' : '▾';
+  });
+  var texBody = document.createElement('div');
+  texBody.className = 'attr-section-body';
+  var texTbl = document.createElement('table');
+  texTbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
+
+  _materialTextureSlots(params).forEach(function(slot) {
+    _appendTextureSlotRow(texTbl, mat, slot, textures[slot]);
+  });
+
+  texBody.appendChild(texTbl);
+  texSec.appendChild(texHdr);
+  texSec.appendChild(texBody);
+
   sec.appendChild(hdr);
   sec.appendChild(body);
   host.appendChild(sec);
+  host.appendChild(texSec);
 }
 
 // ── Curve editor (preview) ───────────────────────────────────────────────

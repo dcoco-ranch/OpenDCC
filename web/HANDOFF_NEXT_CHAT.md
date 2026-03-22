@@ -21,8 +21,11 @@ Branch: `develop`
 - Script Editor upgraded with CodeMirror Python highlighting + basic autocomplete + fallback textarea mode.
 - Material Editor tab in inspector (dedicated panel) with:
   - bound material (`UsdShade`) inspection
-  - editable UsdPreviewSurface params (color, metallic, roughness, opacity, etc.)
-  - immediate viewport preview updates on edit
+  - UsdPreviewSurface param editing (color/roughness/metallic/opacity/etc.)
+  - texture slot entry (connect/disconnect `UsdUVTexture` per slot)
+  - one-click create+bind material for prims with no material
+  - shader ID detection flags for MaterialX / vendor networks (read-only for now)
+  - immediate viewport preview updates on numeric/color edits
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key
@@ -43,10 +46,13 @@ Branch: `develop`
    - graph canvas and minimal UsdShade graph visualization
 2. UV Editor web MVP (Phase 4.2)
    - basic UV display and transform tools
-3. Viewport panel presets (1/2/3/4) interaction polish
+3. MaterialX / vendor material workflows
+   - dedicated editor(s) beyond UsdPreviewSurface
+   - conversion/bridging strategy where possible
+4. Viewport panel presets (1/2/3/4) interaction polish
    - render/picking works in all panels
    - orbit/transform control still driven by main perspective camera
-4. Production hardening:
+5. Production hardening:
    - tests for keyframe/interp/material endpoints
    - UX polish for curve editor interactions.
 
@@ -64,6 +70,11 @@ Branch: `develop`
 - Stage info: `/api/stage/info`
 - Prim at time: `/api/prim/{path}?time=...`
 - Samples: `/api/prim_samples/{path}`
+- Material ops:
+  - `/api/material/{primPath}` (inspect binding + shader ids + preview params + texture connections)
+  - `/api/material/bind` (create/bind material)
+  - `/api/material/{matPath}/set` (set preview parameter)
+  - `/api/material/{matPath}/texture` (connect/clear texture slot)
 - Keyframe ops:
   - `/api/prim/{path}/keyframe/set`
   - `/api/prim/{path}/keyframe/delete`

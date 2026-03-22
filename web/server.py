@@ -1320,15 +1320,172 @@ async def prim_time_samples(prim_path: str, max_samples: int = 400):
     return {"path": full_path, "count": 0, "animated": []}
 
 
-# ── Material info ─────────────────────────────────────────────────────────────
+# ── Material info / editing / binding ────────────────────────────────────────
+
+
+def _sanitize_ident(name: str, fallback: str = "Mat") -> str:
+    raw = str(name or fallback)
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in {"_", "-"}:
+            out.append(ch)
+        else:
+            out.append("_")
+    s = "".join(out).strip("_")
+    return s or fallback
+
+
+def _unique_child_path(stage, parent_path, base_name: str):
+    from pxr import Sdf
+
+    parent = Sdf.Path(str(parent_path))
+    base = _sanitize_ident(base_name, "Mat")
+    cand = parent.AppendChild(base)
+    i = 1
+    while True:
+        p = stage.GetPrimAtPath(cand)
+        if not p or not p.IsValid():
+            return cand
+        cand = parent.AppendChild(f"{base}_{i}")
+        i += 1
+
+
+def _find_preview_surface_shader(mat_prim, create_if_missing: bool = False):
+    from pxr import Usd, UsdShade, Sdf
+
+    for shader_prim in Usd.PrimRange(mat_prim):
+        shader = UsdShade.Shader(shader_prim)
+        if not shader:
+            continue
+        sid = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
+        if sid == "UsdPreviewSurface":
+            return shader
+
+    if not create_if_missing:
+        return None
+
+    stage = mat_prim.GetStage()
+    shader_path = mat_prim.GetPath().AppendChild("PreviewSurface")
+    shader = UsdShade.Shader.Define(stage, shader_path)
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.18, 0.18, 0.18))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
+    return shader
+
+
+def _connect_material_surface(material, shader):
+    out = material.CreateSurfaceOutput()
+    # Signature differences across USD versions
+    try:
+        if out.ConnectToSource(shader.ConnectableAPI(), "surface"):
+            return
+    except Exception:
+        pass
+    try:
+        if out.ConnectToSource(shader, "surface"):
+            return
+    except Exception:
+        pass
+    # Last-resort silent fallback; caller can still bind material.
+
+
+def _infer_preview_input_type(param: str):
+    from pxr import Sdf
+
+    n = str(param or "").lower()
+    if "color" in n or "emissive" in n or "normal" in n:
+        return Sdf.ValueTypeNames.Color3f
+    return Sdf.ValueTypeNames.Float
+
+
+def _coerce_preview_value(inp, value):
+    from pxr import Gf, Sdf
+
+    t = str(inp.GetTypeName()).lower()
+
+    if "asset" in t:
+        return Sdf.AssetPath(str(value))
+
+    if "color3" in t or "float3" in t or "vector3" in t or "normal3" in t:
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            return Gf.Vec3f(float(value[0]), float(value[1]), float(value[2]))
+
+        if isinstance(value, str):
+            txt = value.replace("(", " ").replace(")", " ").replace("[", " ").replace("]", " ")
+            nums = []
+            for tok in txt.replace(",", " ").split():
+                try:
+                    nums.append(float(tok))
+                except Exception:
+                    pass
+            if len(nums) >= 3:
+                return Gf.Vec3f(nums[0], nums[1], nums[2])
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    return value
+
+
+def _material_texture_info(inp):
+    try:
+        src = inp.GetConnectedSource()
+    except Exception:
+        src = None
+    if not src:
+        return None
+
+    try:
+        src_api, source_name, _source_type = src
+        src_prim = src_api.GetPrim()
+    except Exception:
+        return None
+
+    from pxr import UsdShade
+
+    shader = UsdShade.Shader(src_prim)
+    sid = shader.GetIdAttr().Get() if shader and shader.GetIdAttr() else None
+
+    asset_path = None
+    if shader:
+        for key in ("file", "filename", "tex", "inputs:file"):
+            i = shader.GetInput(key)
+            if not i:
+                continue
+            try:
+                v = i.Get()
+                if v is None:
+                    continue
+                asset_path = v.path if hasattr(v, "path") else str(v)
+                if asset_path:
+                    break
+            except Exception:
+                continue
+
+    return {
+        "shaderPath": str(src_prim.GetPath()),
+        "shaderId": str(sid) if sid is not None else None,
+        "output": str(source_name),
+        "assetPath": asset_path,
+    }
+
 
 @app.get("/api/material/{prim_path:path}")
 async def prim_material(prim_path: str, time: Optional[float] = None):
-    """Get material binding and UsdPreviewSurface parameters for a prim."""
+    """Get material binding + shader summary + editable UsdPreviewSurface params."""
     full_path = "/" + prim_path.lstrip("/")
     stage = _current_stage()
     if not stage:
-        return {"bound": False}
+        return {
+            "bound": False,
+            "supported": {
+                "usd_preview_surface": True,
+                "materialx": True,
+                "vendor_shaders": True,
+            },
+        }
 
     from pxr import Sdf, UsdShade, Usd
 
@@ -1339,31 +1496,136 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
     binding = UsdShade.MaterialBindingAPI(prim)
     mat, _ = binding.ComputeBoundMaterial()
     if not mat:
-        return {"bound": False}
+        return {
+            "bound": False,
+            "primPath": full_path,
+            "supported": {
+                "usd_preview_surface": True,
+                "materialx": True,
+                "vendor_shaders": True,
+            },
+        }
 
     mat_path = str(mat.GetPath())
-    result = {"bound": True, "materialPath": mat_path, "query_time": time, "params": {}}
+    result = {
+        "bound": True,
+        "primPath": full_path,
+        "materialPath": mat_path,
+        "query_time": time,
+        "params": {},
+        "textures": {},
+        "shaderIds": [],
+        "editablePreviewSurface": False,
+    }
 
-    # Find UsdPreviewSurface shader
+    preview_shader = None
+    shader_ids = []
+
     for shader_prim in Usd.PrimRange(mat.GetPrim()):
         shader = UsdShade.Shader(shader_prim)
         if not shader:
             continue
-        shader_id = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
-        if shader_id != "UsdPreviewSurface":
-            continue
+        sid = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
+        if sid is not None:
+            shader_ids.append(str(sid))
+        if sid == "UsdPreviewSurface" and preview_shader is None:
+            preview_shader = shader
 
-        tc = Usd.TimeCode(time) if time is not None else None
-        for inp in shader.GetInputs():
-            name = inp.GetBaseName()
-            try:
-                val = inp.Get(tc) if tc is not None else inp.Get()
-                result["params"][name] = str(val) if val is not None else None
-            except Exception:
-                pass
-        break
+    result["shaderIds"] = sorted(set(shader_ids))
+
+    lower_ids = [s.lower() for s in result["shaderIds"]]
+    result["hasMaterialX"] = any(s.startswith("nd_") or "mtlx" in s for s in lower_ids)
+    result["hasVendorShaders"] = any(
+        s not in {"usdpreviewsurface", "usduvtexture", "usdprimvarreader_float2"}
+        and not s.startswith("nd_")
+        for s in lower_ids
+    )
+
+    if not preview_shader:
+        return result
+
+    result["editablePreviewSurface"] = True
+
+    tc = Usd.TimeCode(time) if time is not None else None
+    for inp in preview_shader.GetInputs():
+        name = inp.GetBaseName()
+        try:
+            val = inp.Get(tc) if tc is not None else inp.Get()
+            result["params"][name] = str(val) if val is not None else None
+        except Exception:
+            pass
+
+        tex = _material_texture_info(inp)
+        if tex:
+            result["textures"][name] = tex
 
     return result
+
+
+class _MatBindReq(BaseModel):
+    prim_path: str
+    material_path: Optional[str] = None
+    create_if_missing: bool = True
+    material_name: Optional[str] = None
+    looks_scope: str = "/World/Looks"
+
+
+@app.post("/api/material/bind")
+async def material_bind(req: _MatBindReq):
+    """Bind an existing material to a prim, or create+bind a default UsdPreviewSurface material."""
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    prim_path = "/" + req.prim_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {prim_path}")
+
+    _pxr_push_undo()
+
+    created = False
+    mat = None
+
+    if req.material_path:
+        mat_path = "/" + req.material_path.lstrip("/")
+        mat_prim = stage.GetPrimAtPath(Sdf.Path(mat_path))
+        if not mat_prim or not mat_prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Material not found: {mat_path}")
+        mat = UsdShade.Material(mat_prim)
+    elif req.create_if_missing:
+        looks_path = Sdf.Path("/" + req.looks_scope.lstrip("/"))
+        if str(looks_path) == "/":
+            looks_path = Sdf.Path("/World/Looks")
+        stage.DefinePrim(looks_path, "Scope")
+
+        base_name = req.material_name or f"{prim.GetName()}_Mat"
+        new_path = _unique_child_path(stage, looks_path, base_name)
+        mat = UsdShade.Material.Define(stage, new_path)
+        shader = _find_preview_surface_shader(mat.GetPrim(), create_if_missing=True)
+        if shader:
+            _connect_material_surface(mat, shader)
+        created = True
+    else:
+        raise HTTPException(status_code=400, detail="No material_path provided and create_if_missing=false")
+
+    if not mat:
+        raise HTTPException(status_code=400, detail="Failed to resolve or create material")
+
+    try:
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+    except Exception:
+        UsdShade.MaterialBindingAPI(prim).Bind(mat)
+
+    await _conns.broadcast({"event": "scene_changed"})
+    return {
+        "ok": True,
+        "created": created,
+        "primPath": prim_path,
+        "materialPath": str(mat.GetPath()),
+    }
 
 
 class _MatParamReq(BaseModel):
@@ -1373,13 +1635,13 @@ class _MatParamReq(BaseModel):
 
 @app.post("/api/material/{mat_path:path}/set")
 async def material_set_param(mat_path: str, req: _MatParamReq):
-    """Set a UsdPreviewSurface parameter on a material."""
+    """Set (or create then set) a UsdPreviewSurface parameter on a material."""
     full_path = "/" + mat_path.lstrip("/")
     stage = _current_stage()
     if not stage:
         return {"ok": False, "error": "no stage"}
 
-    from pxr import Sdf, Usd, UsdShade, Gf
+    from pxr import Sdf, UsdShade
 
     _pxr_push_undo()
 
@@ -1387,34 +1649,95 @@ async def material_set_param(mat_path: str, req: _MatParamReq):
     if not mat_prim or not mat_prim.IsValid():
         raise HTTPException(status_code=404, detail=f"Material not found: {full_path}")
 
-    mat = UsdShade.Material(mat_prim)
-    # Find UsdPreviewSurface shader
-    for shader_prim in Usd.PrimRange(mat_prim):
-        shader = UsdShade.Shader(shader_prim)
-        if not shader:
-            continue
-        shader_id = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
-        if shader_id != "UsdPreviewSurface":
-            continue
+    shader = _find_preview_surface_shader(mat_prim, create_if_missing=True)
+    if not shader:
+        raise HTTPException(status_code=404, detail="No UsdPreviewSurface shader found")
 
-        inp = shader.GetInput(req.param)
-        if inp:
-            try:
-                # Coerce value based on parameter type
-                if isinstance(req.value, (int, float)):
-                    inp.Set(float(req.value))
-                elif isinstance(req.value, list) and len(req.value) == 3:
-                    inp.Set(Gf.Vec3f(*[float(v) for v in req.value]))
-                else:
-                    inp.Set(req.value)
-                await _conns.broadcast({"event": "scene_changed"})
-                return {"ok": True}
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+    inp = shader.GetInput(req.param)
+    if not inp:
+        inp = shader.CreateInput(req.param, _infer_preview_input_type(req.param))
 
-        raise HTTPException(status_code=404, detail=f"Param not found: {req.param}")
+    try:
+        inp.Set(_coerce_preview_value(inp, req.value))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
-    raise HTTPException(status_code=404, detail="No UsdPreviewSurface shader found")
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True}
+
+
+class _MatTextureReq(BaseModel):
+    param: str
+    asset_path: str = ""
+    st_primvar: str = "st"
+
+
+@app.post("/api/material/{mat_path:path}/texture")
+async def material_set_texture(mat_path: str, req: _MatTextureReq):
+    """Connect/clear a texture input on a UsdPreviewSurface parameter."""
+    full_path = "/" + mat_path.lstrip("/")
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    _pxr_push_undo()
+
+    mat_prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not mat_prim or not mat_prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Material not found: {full_path}")
+
+    shader = _find_preview_surface_shader(mat_prim, create_if_missing=True)
+    if not shader:
+        raise HTTPException(status_code=404, detail="No UsdPreviewSurface shader found")
+
+    inp = shader.GetInput(req.param)
+    if not inp:
+        inp = shader.CreateInput(req.param, _infer_preview_input_type(req.param))
+
+    asset_path = str(req.asset_path or "").strip()
+    if not asset_path:
+        try:
+            inp.DisconnectSource()
+        except Exception:
+            pass
+        await _conns.broadcast({"event": "scene_changed"})
+        return {"ok": True, "cleared": True}
+
+    base = _sanitize_ident(req.param, "tex")
+    tex_shader = UsdShade.Shader.Define(stage, mat_prim.GetPath().AppendChild(f"{base}_tex"))
+    tex_shader.CreateIdAttr("UsdUVTexture")
+    tex_shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(asset_path))
+    tex_shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    tex_shader.CreateOutput("r", Sdf.ValueTypeNames.Float)
+
+    st_reader = UsdShade.Shader.Define(stage, mat_prim.GetPath().AppendChild("stReader"))
+    st_reader.CreateIdAttr("UsdPrimvarReader_float2")
+    st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(req.st_primvar or "st")
+    st_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+    try:
+        tex_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st_reader.ConnectableAPI(), "result")
+    except Exception:
+        try:
+            tex_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st_reader, "result")
+        except Exception:
+            pass
+
+    type_name = str(inp.GetTypeName()).lower()
+    out_name = "rgb" if ("color3" in type_name or "float3" in type_name or "vector3" in type_name or "normal3" in type_name) else "r"
+
+    try:
+        inp.ConnectToSource(tex_shader.ConnectableAPI(), out_name)
+    except Exception:
+        try:
+            inp.ConnectToSource(tex_shader, out_name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Texture connect failed: {exc}")
+
+    await _conns.broadcast({"event": "scene_changed"})
+    return {"ok": True, "asset_path": asset_path, "output": out_name}
 
 
 # ── Attribute editing ─────────────────────────────────────────────────────────
