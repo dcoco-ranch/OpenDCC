@@ -109,8 +109,8 @@
 - [ ] Transformations UV basiques (translate, rotate, scale)
 
 ### 4.3 — Node Editor web (remplace `opendcc.ui.node_editor` + `opendcc.usd_editor.usd_node_editor`)
-- [ ] Framework de node graph en canvas (librairie : rete.js, litegraph.js, ou custom)
-- [ ] Représentation des `UsdShade` networks (Shader → Material → Binding)
+- [x] Framework MVP de node graph en canvas/SVG (custom) dans l’inspector
+- [x] Représentation minimale des `UsdShade` networks (Shader → Material → Binding)
 - [ ] Connection drag & drop entre nodes
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)

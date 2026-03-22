@@ -11,15 +11,17 @@ Branch: `develop`
 - `05a7738` feat(usd-layering): author pxr edits in sidecar layer and scope material preview
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 
-## In-progress hotfix (not committed yet)
-- `web/static/index.html`
-  - Fixed USD up-axis detection for WASM stages:
-    - old code assumed `GetUpAxis()` returned an integer char code (`String.fromCharCode(...)`)
-    - now normalizes string/number/token forms before applying Z-up → Y-up root rotation
-  - Added WASM runtime `print` / `printErr` filters to suppress known non-actionable spam:
-    - `Unsupported interpolation type 'uniform' for primvar __faceindex`
-    - `_FindAndInstantiateDiscoveryPlugins ... pluginFactory`
-  - Added runtime log de-duplication for remaining WASM stdout/stderr lines.
+## New in current chat (in progress)
+- Phase 4.3 Node Editor web MVP started:
+  - new backend endpoint `GET /api/node_graph/{prim_path}`
+    - resolves computed bound material for a prim
+    - extracts minimal shader graph (`nodes` + `edges`) from UsdShade network
+    - includes material output links (surface/displacement/volume) + binding metadata
+  - new frontend inspector tab `Node`
+    - dedicated Node panel (separate from Properties/Material)
+    - SVG graph visualization (nodes + directional links)
+    - quick action when no material: `+ Create & Bind PreviewSurface`
+    - refresh integration on `material_changed`
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
@@ -64,8 +66,9 @@ Branch: `develop`
 - Status bar timeline at bottom
 
 ## Pending work (high priority)
-1. Node Editor web MVP (Phase 4.3)
-   - graph canvas and minimal UsdShade graph visualization
+1. Node Editor web (Phase 4.3) — continue after MVP
+   - improve graph layout/readability
+   - add node interaction + connection editing drag & drop
 2. UV Editor web MVP (Phase 4.2)
    - basic UV display and transform tools
 3. MaterialX / vendor material workflows
@@ -75,7 +78,7 @@ Branch: `develop`
    - render/picking works in all panels
    - orbit/transform control still driven by main perspective camera
 5. Production hardening:
-   - tests for keyframe/interp/material endpoints
+   - tests for keyframe/interp/material/node endpoints
    - UX polish for curve editor interactions.
 
 ## VM deployment notes
@@ -98,6 +101,8 @@ Branch: `develop`
   - `/api/material/unbind` (remove direct binding opinions)
   - `/api/material/{matPath}/set` (set preview parameter)
   - `/api/material/{matPath}/texture` (connect/clear texture slot)
+- Node graph:
+  - `/api/node_graph/{primPath}` (minimal UsdShade network nodes/edges for bound material)
 - Layer/export ops:
   - `/api/stage/save_edits_as` (export current edits layer)
 - Keyframe ops:

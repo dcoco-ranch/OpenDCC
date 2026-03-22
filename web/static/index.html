@@ -402,6 +402,7 @@
     <button onclick="downloadUSDA()" title="Download USDA">⬇ USDA</button>
     <button onclick="downloadGLB()" title="Download GLB">⬇ GLB</button>
     <button id="btn-material-panel" onclick="setInspectorTab('material')" title="Open Material Editor">Material Editor</button>
+    <button id="btn-node-panel" onclick="setInspectorTab('node')" title="Open Node Editor">Node Editor</button>
     <button id="btn-curve-panel" onclick="toggleCurvePanel()" title="Toggle Curve Editor panel">Curve Editor</button>
     <button onclick="toggleScript()">Script Editor</button>
   </div>
@@ -500,16 +501,18 @@
 
   <div id="splitter-right" class="panel-splitter vertical" title="Resize properties width"></div>
 
-  <!-- ── Inspector (Properties + Material Editor) ─────────────────────── -->
+  <!-- ── Inspector (Properties + Material + Node Editor) ─────────────── -->
   <div id="properties">
     <div class="panel-header">
       <div style="display:flex;gap:4px;align-items:center">
         <button id="inspector-tab-properties" class="primary" style="padding:1px 6px;font-size:10px" onclick="setInspectorTab('properties')">Properties</button>
         <button id="inspector-tab-material" style="padding:1px 6px;font-size:10px" onclick="setInspectorTab('material')">Material</button>
+        <button id="inspector-tab-node" style="padding:1px 6px;font-size:10px" onclick="setInspectorTab('node')">Node</button>
       </div>
       <div style="display:flex;gap:4px;align-items:center">
         <button id="btn-refresh-properties" style="padding:1px 6px;font-size:10px" onclick="refreshPropertiesPanel()" title="Refresh properties">↻</button>
         <button id="btn-refresh-material" style="padding:1px 6px;font-size:10px;display:none" onclick="refreshMaterialPanel()" title="Refresh material editor">↻</button>
+        <button id="btn-refresh-node" style="padding:1px 6px;font-size:10px;display:none" onclick="refreshNodePanel()" title="Refresh node editor">↻</button>
       </div>
     </div>
     <div class="scroll" id="props-scroll">
@@ -520,6 +523,9 @@
     </div>
     <div class="scroll" id="material-scroll" style="display:none;padding:6px 8px">
       <div style="padding:8px;font-size:11px;color:var(--text2)">Select a prim to inspect material</div>
+    </div>
+    <div class="scroll" id="node-scroll" style="display:none;padding:6px 8px">
+      <div style="padding:8px;font-size:11px;color:var(--text2)">Select a prim to inspect shader graph</div>
     </div>
   </div>
 
@@ -1491,8 +1497,10 @@ function _scheduleMaterialPanelRefresh() {
   if (_matPanelRefreshTimer) clearTimeout(_matPanelRefreshTimer);
   _matPanelRefreshTimer = setTimeout(function() {
     _matPanelRefreshTimer = null;
-    if (typeof refreshMaterialPanel === 'function' && _inspectorTab === 'material') {
+    if (_inspectorTab === 'material' && typeof refreshMaterialPanel === 'function') {
       refreshMaterialPanel();
+    } else if (_inspectorTab === 'node' && typeof refreshNodePanel === 'function') {
+      refreshNodePanel();
     }
   }, 120);
 }
@@ -2104,27 +2112,41 @@ function refreshCurvePanel() {
 let _inspectorTab = 'properties';
 
 function setInspectorTab(tab) {
-  _inspectorTab = (tab === 'material') ? 'material' : 'properties';
+  _inspectorTab = (tab === 'material' || tab === 'node') ? tab : 'properties';
 
   var propsBtn = document.getElementById('inspector-tab-properties');
   var matBtn = document.getElementById('inspector-tab-material');
+  var nodeBtn = document.getElementById('inspector-tab-node');
   var propsScroll = document.getElementById('props-scroll');
   var matScroll = document.getElementById('material-scroll');
+  var nodeScroll = document.getElementById('node-scroll');
   var refProps = document.getElementById('btn-refresh-properties');
   var refMat = document.getElementById('btn-refresh-material');
+  var refNode = document.getElementById('btn-refresh-node');
   var headMat = document.getElementById('btn-material-panel');
+  var headNode = document.getElementById('btn-node-panel');
 
   if (propsBtn) propsBtn.classList.toggle('primary', _inspectorTab === 'properties');
   if (matBtn) matBtn.classList.toggle('primary', _inspectorTab === 'material');
+  if (nodeBtn) nodeBtn.classList.toggle('primary', _inspectorTab === 'node');
+
   if (propsScroll) propsScroll.style.display = (_inspectorTab === 'properties') ? 'block' : 'none';
   if (matScroll) matScroll.style.display = (_inspectorTab === 'material') ? 'block' : 'none';
+  if (nodeScroll) nodeScroll.style.display = (_inspectorTab === 'node') ? 'block' : 'none';
+
   if (refProps) refProps.style.display = (_inspectorTab === 'properties') ? '' : 'none';
   if (refMat) refMat.style.display = (_inspectorTab === 'material') ? '' : 'none';
-  if (headMat) headMat.classList.toggle('primary', _inspectorTab === 'material');
+  if (refNode) refNode.style.display = (_inspectorTab === 'node') ? '' : 'none';
 
-  if (_inspectorTab === 'material' && _selectedPaths.length) {
+  if (headMat) headMat.classList.toggle('primary', _inspectorTab === 'material');
+  if (headNode) headNode.classList.toggle('primary', _inspectorTab === 'node');
+
+  if (_selectedPaths.length) {
     var path = _selectedPaths[_selectedPaths.length - 1];
-    if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+    if (path) {
+      if (_inspectorTab === 'material') loadMaterialPanel(path, Number(window._currentTimeCode));
+      if (_inspectorTab === 'node') loadNodePanel(path);
+    }
   }
 }
 
@@ -2140,10 +2162,17 @@ function refreshMaterialPanel() {
   if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
 }
 
+function refreshNodePanel() {
+  if (!_selectedPaths.length) return;
+  var path = _selectedPaths[_selectedPaths.length - 1];
+  if (path) loadNodePanel(path);
+}
+
 window.toggleCurvePanel = toggleCurvePanel;
 window.refreshCurvePanel = refreshCurvePanel;
 window.refreshPropertiesPanel = refreshPropertiesPanel;
 window.refreshMaterialPanel = refreshMaterialPanel;
+window.refreshNodePanel = refreshNodePanel;
 window.setInspectorTab = setInspectorTab;
 
 // ── DCC commands ──────────────────────────────────────────────────────────
@@ -2291,6 +2320,7 @@ async function selectPrimByPath(path, opts) {
 
   // Load extra panels if available
   if (!opts.skipMaterial) loadMaterialPanel(path, tc);
+  if (!opts.skipNode && _inspectorTab === 'node') loadNodePanel(path);
   if (!opts.skipCurve && window._curvePanelOpen) loadCurvePanel(path, tc);
 }
 window.selectPrimByPath = selectPrimByPath;
@@ -2466,9 +2496,12 @@ async function setMaterialParam(materialPath, paramName, value, opts) {
   _applyMaterialPreview(paramName, value);
   setStatus('Material param set: ' + paramName);
 
-  if (!opts.skipPanelRefresh && _inspectorTab === 'material' && _selectedPaths.length) {
+  if (!opts.skipPanelRefresh && _selectedPaths.length) {
     var path = _selectedPaths[_selectedPaths.length - 1];
-    if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+    if (path) {
+      if (_inspectorTab === 'material') loadMaterialPanel(path, Number(window._currentTimeCode));
+      if (_inspectorTab === 'node') loadNodePanel(path);
+    }
   }
   return true;
 }
@@ -2485,9 +2518,12 @@ async function setMaterialTexture(materialPath, paramName, assetPath, opts) {
   if (!res || !res.ok) return false;
 
   setStatus((assetPath ? 'Texture set: ' : 'Texture cleared: ') + paramName);
-  if (!opts.skipPanelRefresh && _inspectorTab === 'material' && _selectedPaths.length) {
+  if (!opts.skipPanelRefresh && _selectedPaths.length) {
     var path = _selectedPaths[_selectedPaths.length - 1];
-    if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+    if (path) {
+      if (_inspectorTab === 'material') loadMaterialPanel(path, Number(window._currentTimeCode));
+      if (_inspectorTab === 'node') loadNodePanel(path);
+    }
   }
   return true;
 }
@@ -2884,6 +2920,307 @@ async function loadMaterialPanel(primPath, timeCode) {
   sec.appendChild(body);
   host.appendChild(sec);
   host.appendChild(texSec);
+}
+
+function _nodeEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function _nodeShaderKind(node) {
+  var sid = String((node && node.shaderId) || '').toLowerCase();
+  if (!sid) return 'shader';
+  if (sid.indexOf('usdpreviewsurface') >= 0) return 'surface';
+  if (sid.indexOf('usduvtexture') >= 0) return 'texture';
+  if (sid.indexOf('primvarreader') >= 0) return 'reader';
+  return 'shader';
+}
+
+function _layoutNodeGraph(nodes, edges, materialId) {
+  var nodeW = 180, nodeH = 74, pad = 18, colGap = 110, rowGap = 18;
+
+  var incoming = {};
+  var outgoingCount = {};
+  nodes.forEach(function(n) {
+    incoming[n.id] = [];
+    outgoingCount[n.id] = 0;
+  });
+
+  (edges || []).forEach(function(e) {
+    if (!incoming[e.target]) incoming[e.target] = [];
+    incoming[e.target].push(e.source);
+    outgoingCount[e.source] = (outgoingCount[e.source] || 0) + 1;
+  });
+
+  var dist = {};
+  nodes.forEach(function(n) { dist[n.id] = Number.POSITIVE_INFINITY; });
+
+  var queue = [];
+  if (materialId && Object.prototype.hasOwnProperty.call(dist, materialId)) {
+    dist[materialId] = 0;
+    queue.push(materialId);
+  }
+
+  if (!queue.length) {
+    nodes.forEach(function(n) {
+      if (!(outgoingCount[n.id] > 0)) {
+        dist[n.id] = 0;
+        queue.push(n.id);
+      }
+    });
+  }
+
+  while (queue.length) {
+    var cur = queue.shift();
+    var d = dist[cur];
+    var srcs = incoming[cur] || [];
+    for (var i = 0; i < srcs.length; i++) {
+      var sid = srcs[i];
+      if (!Object.prototype.hasOwnProperty.call(dist, sid)) continue;
+      if (dist[sid] > d + 1) {
+        dist[sid] = d + 1;
+        queue.push(sid);
+      }
+    }
+  }
+
+  var maxDist = 0;
+  nodes.forEach(function(n) {
+    var d = dist[n.id];
+    if (Number.isFinite(d) && d > maxDist) maxDist = d;
+  });
+
+  var cols = {};
+  nodes.forEach(function(n) {
+    var d = dist[n.id];
+    var col = Number.isFinite(d) ? (maxDist - d) : 0;
+    if (!cols[col]) cols[col] = [];
+    cols[col].push(n);
+  });
+
+  Object.keys(cols).forEach(function(k) {
+    cols[k].sort(function(a, b) {
+      return String(a.name || a.id).localeCompare(String(b.name || b.id));
+    });
+  });
+
+  var pos = {};
+  var maxCol = 0, maxRow = 0;
+  Object.keys(cols).forEach(function(k) {
+    var col = Number(k);
+    if (col > maxCol) maxCol = col;
+    var arr = cols[k] || [];
+    for (var i = 0; i < arr.length; i++) {
+      var n = arr[i];
+      pos[n.id] = {
+        x: pad + col * (nodeW + colGap),
+        y: pad + i * (nodeH + rowGap),
+      };
+    }
+    if (arr.length - 1 > maxRow) maxRow = arr.length - 1;
+  });
+
+  return {
+    nodeW: nodeW,
+    nodeH: nodeH,
+    width: pad * 2 + (maxCol + 1) * nodeW + maxCol * colGap,
+    height: pad * 2 + (maxRow + 1) * nodeH + Math.max(0, maxRow) * rowGap,
+    pos: pos,
+  };
+}
+
+function _renderNodeGraphSvg(host, graph) {
+  var nodes = (graph && graph.nodes) || [];
+  var edges = (graph && graph.edges) || [];
+  var matPath = graph && graph.material ? graph.material.path : null;
+
+  if (!nodes.length) {
+    host.innerHTML = '<div style="padding:8px;color:var(--text2);font-size:11px">No shader nodes found on bound material.</div>';
+    return;
+  }
+
+  var layout = _layoutNodeGraph(nodes, edges, matPath);
+  var NS = 'http://www.w3.org/2000/svg';
+  var svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + layout.width + ' ' + layout.height);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', String(Math.max(220, Math.min(560, layout.height))));
+  svg.style.background = '#171717';
+  svg.style.border = '1px solid var(--border)';
+  svg.style.borderRadius = '4px';
+
+  var defs = document.createElementNS(NS, 'defs');
+  var marker = document.createElementNS(NS, 'marker');
+  marker.setAttribute('id', 'node-arrow');
+  marker.setAttribute('markerWidth', '8');
+  marker.setAttribute('markerHeight', '8');
+  marker.setAttribute('refX', '7');
+  marker.setAttribute('refY', '4');
+  marker.setAttribute('orient', 'auto');
+  var tri = document.createElementNS(NS, 'path');
+  tri.setAttribute('d', 'M0,0 L8,4 L0,8 Z');
+  tri.setAttribute('fill', '#7ba9d6');
+  marker.appendChild(tri);
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  edges.forEach(function(e) {
+    var s = layout.pos[e.source];
+    var t = layout.pos[e.target];
+    if (!s || !t) return;
+
+    var x1 = s.x + layout.nodeW;
+    var y1 = s.y + layout.nodeH * 0.5;
+    var x2 = t.x;
+    var y2 = t.y + layout.nodeH * 0.5;
+    var c = Math.max(28, Math.min(80, Math.abs(x2 - x1) * 0.35));
+
+    var p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + c) + ' ' + y1 + ', ' + (x2 - c) + ' ' + y2 + ', ' + x2 + ' ' + y2);
+    p.setAttribute('fill', 'none');
+    p.setAttribute('stroke', '#7ba9d6');
+    p.setAttribute('stroke-width', '1.4');
+    p.setAttribute('marker-end', 'url(#node-arrow)');
+    svg.appendChild(p);
+  });
+
+  nodes.forEach(function(n) {
+    var p = layout.pos[n.id];
+    if (!p) return;
+
+    var kind = (n.type === 'Material') ? 'material' : _nodeShaderKind(n);
+    var fill = '#2f2f2f';
+    if (kind === 'material') fill = '#324a67';
+    else if (kind === 'surface') fill = '#414b32';
+    else if (kind === 'texture') fill = '#4c3f2f';
+    else if (kind === 'reader') fill = '#3b334d';
+
+    var g = document.createElementNS(NS, 'g');
+
+    var r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', String(p.x));
+    r.setAttribute('y', String(p.y));
+    r.setAttribute('rx', '6');
+    r.setAttribute('ry', '6');
+    r.setAttribute('width', String(layout.nodeW));
+    r.setAttribute('height', String(layout.nodeH));
+    r.setAttribute('fill', fill);
+    r.setAttribute('stroke', '#6b6b6b');
+    r.setAttribute('stroke-width', '1');
+    g.appendChild(r);
+
+    var t1 = document.createElementNS(NS, 'text');
+    t1.setAttribute('x', String(p.x + 8));
+    t1.setAttribute('y', String(p.y + 18));
+    t1.setAttribute('fill', '#ececec');
+    t1.setAttribute('font-size', '11');
+    t1.setAttribute('font-weight', '600');
+    t1.textContent = String(n.name || n.id);
+    g.appendChild(t1);
+
+    var subtitle = (n.type === 'Material') ? 'Material' : (n.shaderId || n.type || 'Shader');
+    var t2 = document.createElementNS(NS, 'text');
+    t2.setAttribute('x', String(p.x + 8));
+    t2.setAttribute('y', String(p.y + 34));
+    t2.setAttribute('fill', '#cfcfcf');
+    t2.setAttribute('font-size', '10');
+    t2.textContent = String(subtitle);
+    g.appendChild(t2);
+
+    var ioTxt = ((n.inputs || []).length + ' in  •  ' + ((n.outputs || []).length || 0) + ' out');
+    var t3 = document.createElementNS(NS, 'text');
+    t3.setAttribute('x', String(p.x + 8));
+    t3.setAttribute('y', String(p.y + 53));
+    t3.setAttribute('fill', '#b8b8b8');
+    t3.setAttribute('font-size', '10');
+    t3.textContent = ioTxt;
+    g.appendChild(t3);
+
+    var t4 = document.createElementNS(NS, 'text');
+    t4.setAttribute('x', String(p.x + 8));
+    t4.setAttribute('y', String(p.y + 67));
+    t4.setAttribute('fill', '#9ea7b1');
+    t4.setAttribute('font-size', '9');
+    t4.textContent = String(n.path || n.id);
+    g.appendChild(t4);
+
+    svg.appendChild(g);
+  });
+
+  host.innerHTML = '';
+  host.appendChild(svg);
+}
+
+async function loadNodePanel(primPath) {
+  var host = document.getElementById('node-scroll');
+  if (!host) return;
+  host.innerHTML = '';
+
+  if (!primPath) {
+    host.innerHTML = '<div style="padding:8px;font-size:11px;color:var(--text2)">Select a prim to inspect shader graph</div>';
+    return;
+  }
+
+  var info = document.createElement('div');
+  info.style.cssText = 'padding:2px 2px 8px 2px;color:var(--text2);font-size:10px;line-height:1.5';
+  info.innerHTML = '<div><b style="color:var(--text)">Prim</b> ' + _nodeEsc(primPath) + '</div>';
+  host.appendChild(info);
+
+  var key = primPath.replace(/^\//, '');
+  var data = await api('/api/node_graph/' + key);
+  if (!data || data.ok === false) {
+    host.innerHTML += '<div style="padding:8px;color:var(--danger);font-size:11px">Failed to load node graph</div>';
+    return;
+  }
+
+  if (!data.bound) {
+    var msg = document.createElement('div');
+    msg.style.cssText = 'padding:8px;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:4px;display:flex;flex-direction:column;gap:8px';
+    msg.innerHTML = 'No bound material found on selected prim.';
+
+    var btn = document.createElement('button');
+    btn.textContent = '+ Create & Bind PreviewSurface';
+    btn.style.cssText = 'width:max-content;padding:2px 8px;font-size:11px';
+    btn.addEventListener('click', async function() {
+      var ok = await bindDefaultMaterial(primPath);
+      if (ok) loadNodePanel(primPath);
+    });
+    msg.appendChild(btn);
+    host.appendChild(msg);
+    return;
+  }
+
+  var mat = data.material || {};
+  info.innerHTML += '<div><b style="color:var(--text)">Material</b> ' + _nodeEsc(mat.path || '—') + '</div>'
+    + '<div>Binding: purpose=' + _nodeEsc(mat.purpose || 'allPurpose') + (mat.isDirect ? ' (direct)' : ' (computed)') + '</div>';
+
+  var sec = document.createElement('div');
+  sec.className = 'attr-section';
+  var hdr = document.createElement('div');
+  hdr.className = 'attr-section-header';
+  hdr.innerHTML = '<span class="toggle">▾</span> Node Graph <span class="mat-tag">MVP</span>'
+    + '<span style="color:var(--text2);font-size:10px;margin-left:auto">'
+    + (data.nodes ? data.nodes.length : 0) + ' nodes / ' + (data.edges ? data.edges.length : 0) + ' edges</span>';
+  hdr.addEventListener('click', function() {
+    var b = sec.querySelector('.attr-section-body');
+    b.classList.toggle('collapsed');
+    hdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '▸' : '▾';
+  });
+
+  var body = document.createElement('div');
+  body.className = 'attr-section-body';
+
+  var graphWrap = document.createElement('div');
+  graphWrap.style.cssText = 'padding:8px';
+  _renderNodeGraphSvg(graphWrap, data);
+  body.appendChild(graphWrap);
+
+  sec.appendChild(hdr);
+  sec.appendChild(body);
+  host.appendChild(sec);
 }
 
 // ── Curve editor (preview) ───────────────────────────────────────────────

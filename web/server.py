@@ -1943,6 +1943,236 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
     return result
 
 
+def _compute_bound_material(binding_api):
+    """Resolve computed bound material with purpose fallback.
+
+    Returns: (material, relation, purpose_name)
+    """
+    from pxr import UsdShade
+
+    mat, rel = None, None
+    purpose = "allPurpose"
+
+    try:
+        mat, rel = binding_api.ComputeBoundMaterial()
+    except Exception:
+        mat, rel = None, None
+
+    if not mat:
+        for pn in ("preview", "full"):
+            try:
+                tok = _usdshade_token(UsdShade.Tokens, pn)
+                m, r = binding_api.ComputeBoundMaterial(tok)
+                if m:
+                    mat, rel = m, r
+                    purpose = pn
+                    break
+            except Exception:
+                continue
+
+    return mat, rel, purpose
+
+
+@app.get("/api/node_graph/{prim_path:path}")
+async def node_graph(prim_path: str):
+    """Minimal node graph view for bound UsdShade material network."""
+    full_path = "/" + prim_path.lstrip("/")
+    stage = _current_stage()
+    if not stage:
+        return {
+            "ok": True,
+            "primPath": full_path,
+            "bound": False,
+            "nodes": [],
+            "edges": [],
+        }
+
+    from pxr import Sdf, Usd, UsdShade
+
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+    binding = UsdShade.MaterialBindingAPI(prim)
+    mat, rel, purpose = _compute_bound_material(binding)
+
+    if not mat:
+        return {
+            "ok": True,
+            "primPath": full_path,
+            "bound": False,
+            "nodes": [],
+            "edges": [],
+            "material": None,
+        }
+
+    mat_prim = mat.GetPrim()
+    mat_path = str(mat_prim.GetPath())
+
+    nodes: list[dict[str, Any]] = []
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    edge_keys: set[tuple[str, str, str, str]] = set()
+
+    def ensure_node_from_prim(p):
+        node_id = str(p.GetPath())
+        if node_id in nodes_by_id:
+            return nodes_by_id[node_id]
+
+        node = {
+            "id": node_id,
+            "path": node_id,
+            "name": p.GetName() or node_id.rsplit("/", 1)[-1],
+            "type": str(p.GetTypeName() or "Prim"),
+            "shaderId": None,
+            "inputs": [],
+            "outputs": [],
+        }
+        nodes.append(node)
+        nodes_by_id[node_id] = node
+        return node
+
+    for shader_prim in Usd.PrimRange(mat_prim):
+        shader = UsdShade.Shader(shader_prim)
+        if not shader:
+            continue
+
+        node = ensure_node_from_prim(shader_prim)
+        node["type"] = "Shader"
+
+        try:
+            sid = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
+            if sid is not None:
+                node["shaderId"] = str(sid)
+        except Exception:
+            pass
+
+        try:
+            node["outputs"] = [
+                {"name": out.GetBaseName(), "type": str(out.GetTypeName())}
+                for out in shader.GetOutputs()
+            ]
+        except Exception:
+            node["outputs"] = []
+
+        node_inputs = []
+        for inp in shader.GetInputs():
+            entry = {
+                "name": inp.GetBaseName(),
+                "type": str(inp.GetTypeName()),
+                "value": None,
+            }
+
+            try:
+                v = inp.Get()
+                if v is not None:
+                    entry["value"] = str(v)
+            except Exception:
+                pass
+
+            try:
+                src = inp.GetConnectedSource()
+            except Exception:
+                src = None
+
+            if src:
+                try:
+                    src_api, src_name, _src_type = src
+                    src_prim = src_api.GetPrim()
+                    src_id = str(src_prim.GetPath())
+                    ensure_node_from_prim(src_prim)
+
+                    src_out = str(src_name)
+                    dst_in = inp.GetBaseName()
+                    entry["sourceNode"] = src_id
+                    entry["sourceOutput"] = src_out
+
+                    ekey = (src_id, src_out, node["id"], dst_in)
+                    if ekey not in edge_keys:
+                        edge_keys.add(ekey)
+                        edges.append({
+                            "source": src_id,
+                            "sourceOutput": src_out,
+                            "target": node["id"],
+                            "targetInput": dst_in,
+                        })
+                except Exception:
+                    pass
+
+            node_inputs.append(entry)
+
+        node["inputs"] = node_inputs
+
+    material_node = {
+        "id": mat_path,
+        "path": mat_path,
+        "name": mat_prim.GetName() or mat_path.rsplit("/", 1)[-1],
+        "type": "Material",
+        "shaderId": None,
+        "inputs": [],
+        "outputs": [],
+    }
+    nodes.append(material_node)
+    nodes_by_id[mat_path] = material_node
+
+    for label, fn_name in (("surface", "GetSurfaceOutput"), ("displacement", "GetDisplacementOutput"), ("volume", "GetVolumeOutput")):
+        out = None
+        fn = getattr(mat, fn_name, None)
+        if callable(fn):
+            try:
+                out = fn()
+            except Exception:
+                out = None
+
+        if not out:
+            continue
+
+        material_node["outputs"].append({"name": label, "type": "output"})
+
+        try:
+            src = out.GetConnectedSource()
+        except Exception:
+            src = None
+
+        if not src:
+            continue
+
+        try:
+            src_api, src_name, _src_type = src
+            src_prim = src_api.GetPrim()
+            src_id = str(src_prim.GetPath())
+            ensure_node_from_prim(src_prim)
+            ekey = (src_id, str(src_name), mat_path, label)
+            if ekey not in edge_keys:
+                edge_keys.add(ekey)
+                edges.append({
+                    "source": src_id,
+                    "sourceOutput": str(src_name),
+                    "target": mat_path,
+                    "targetInput": label,
+                })
+        except Exception:
+            continue
+
+    # Stable output order
+    nodes.sort(key=lambda n: (0 if n.get("type") == "Material" else 1, n.get("path", "")))
+    edges.sort(key=lambda e: (e.get("source", ""), e.get("target", ""), e.get("sourceOutput", ""), e.get("targetInput", "")))
+
+    return {
+        "ok": True,
+        "primPath": full_path,
+        "bound": True,
+        "material": {
+            "path": mat_path,
+            "bindingRelation": str(rel.GetPath()) if rel else None,
+            "purpose": purpose,
+            "isDirect": bool(rel and str(rel.GetPrim().GetPath()) == full_path),
+        },
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 class _MatBindReq(BaseModel):
     prim_path: str
     material_path: Optional[str] = None
