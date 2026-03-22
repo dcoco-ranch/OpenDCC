@@ -1309,6 +1309,7 @@ function _isFilteredUsdRuntimeLog(msg) {
     (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) ||
     (msg.indexOf('_FindAndInstantiateDiscoveryPlugins') >= 0 && msg.indexOf('pluginFactory') >= 0) ||
     (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=usd') >= 0 && msg.indexOf('Cannot determine file format') >= 0) ||
+    (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=mtlx') >= 0 && msg.indexOf('Cannot determine file format') >= 0) ||
     (msg.indexOf('Material not found') >= 0 && msg.indexOf('HydraMaterial') >= 0)
   );
 }
@@ -1695,6 +1696,7 @@ window.THREE          = THREE;
     return (
       (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) ||
       (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=usd') >= 0 && msg.indexOf('Cannot determine file format') >= 0) ||
+      (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=mtlx') >= 0 && msg.indexOf('Cannot determine file format') >= 0) ||
       (msg.indexOf('Material not found') >= 0 && msg.indexOf('HydraMaterial') >= 0)
     );
   }

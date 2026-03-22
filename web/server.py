@@ -1062,8 +1062,9 @@ async def stage_asset(path: str):
 
     content = P(resolved).read_bytes()
 
-    # Normalize MaterialX reference args for usd-wasm compatibility when
-    # serving textual USDA layers (prevents target=usd on .mtlx references).
+    # Normalize MaterialX references for usd-wasm compatibility when
+    # serving textual USDA layers: strip SDF_FORMAT_ARGS from .mtlx refs,
+    # because some wasm builds treat the full token as a literal filename.
     ext = os.path.splitext(resolved)[1].lower()
     if ext in (".usd", ".usda") and content.startswith(b"#usda"):
         try:
@@ -1071,14 +1072,7 @@ async def stage_asset(path: str):
 
             def _fix_mtlx_ref(m):
                 ref_path = m.group(1)
-                args = m.group(2) or ""
-                if not args:
-                    args = ":SDF_FORMAT_ARGS:target=mtlx"
-                elif re.search(r"target=usd", args, re.IGNORECASE):
-                    args = re.sub(r"target=usd", "target=mtlx", args, flags=re.IGNORECASE)
-                elif not re.search(r"target=", args, re.IGNORECASE):
-                    args = args + "&target=mtlx"
-                return f"@{ref_path}{args}@"
+                return f"@{ref_path}@"
 
             patched = re.sub(
                 r"@([^@\n\r]*?\.mtlx)(:SDF_FORMAT_ARGS:[^@\n\r]*)?@",
