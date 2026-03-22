@@ -1048,6 +1048,39 @@ _applyTimelineRange(_startTimeCode, _endTimeCode, _timeCodesPerSecond, false);
 // can determine the file format without an HTTP round-trip.
 const STAGE_VPATH = '/scene.usda';
 
+function _normalizeUpAxisToken(raw) {
+  if (raw === null || raw === undefined) return 'y';
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return String.fromCharCode(raw).trim().toLowerCase();
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim().toLowerCase();
+    return s ? s[0] : 'y';
+  }
+  try {
+    const s = String(raw).trim().toLowerCase();
+    return s ? s[0] : 'y';
+  } catch (_) {
+    return 'y';
+  }
+}
+
+const _usdLogSeen = new Set();
+function _isFilteredUsdRuntimeLog(msg) {
+  return (
+    (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) ||
+    (msg.indexOf('_FindAndInstantiateDiscoveryPlugins') >= 0 && msg.indexOf('pluginFactory') >= 0)
+  );
+}
+function _logUsdRuntime(raw, isErr) {
+  const msg = String(raw || '').trim();
+  if (!msg || _isFilteredUsdRuntimeLog(msg)) return;
+  const key = (isErr ? 'E:' : 'I:') + msg;
+  if (_usdLogSeen.has(key)) return;
+  _usdLogSeen.add(key);
+  (isErr ? console.error : console.log)('[usd-wasm]', msg);
+}
+
 // ── Initialise USD WASM module ────────────────────────────────────────────
 const getUsdModule = globalThis["NEEDLE:USD:GET"];
 let USD = null;
@@ -1057,6 +1090,8 @@ try {
   USD = await getUsdModule({
     mainScriptUrlOrBlob: "/usd/bindings/emHdBindings.js",
     locateFile: (file) => "/usd/bindings/" + file,
+    print: (text) => _logUsdRuntime(text, false),
+    printErr: (text) => _logUsdRuntime(text, true),
     // Resolve external references (sublayers, textures, etc.) via server
     urlModifier: async (url) => {
       // If it's a relative path or file path, fetch from our layer endpoint
@@ -1249,9 +1284,15 @@ async function loadStage(reframe = true) {
     if (stage instanceof Promise) stage = await stage;
 
     // Coordinate system: Z-up USD → Y-up Three.js
-    usdRoot.rotation.x =
-      String.fromCharCode(stage.GetUpAxis?.() ?? 89) === 'z'   // 'Y'=89
-        ? -Math.PI / 2 : 0;
+    let upAxisRaw = null;
+    try {
+      upAxisRaw = stage && stage.GetUpAxis ? stage.GetUpAxis() : null;
+      if (upAxisRaw instanceof Promise) upAxisRaw = await upAxisRaw;
+    } catch (_) {
+      upAxisRaw = null;
+    }
+    const upAxis = _normalizeUpAxisToken(upAxisRaw);
+    usdRoot.rotation.x = (upAxis === 'z') ? -Math.PI / 2 : 0;
 
     const startTimeCode = stage.GetStartTimeCode ? Number(stage.GetStartTimeCode()) : 0;
     const endTimeCode = stage.GetEndTimeCode ? Number(stage.GetEndTimeCode()) : (startTimeCode + 100);

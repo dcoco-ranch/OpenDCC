@@ -11,6 +11,16 @@ Branch: `develop`
 - `05a7738` feat(usd-layering): author pxr edits in sidecar layer and scope material preview
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 
+## In-progress hotfix (not committed yet)
+- `web/static/index.html`
+  - Fixed USD up-axis detection for WASM stages:
+    - old code assumed `GetUpAxis()` returned an integer char code (`String.fromCharCode(...)`)
+    - now normalizes string/number/token forms before applying Z-up → Y-up root rotation
+  - Added WASM runtime `print` / `printErr` filters to suppress known non-actionable spam:
+    - `Unsupported interpolation type 'uniform' for primvar __faceindex`
+    - `_FindAndInstantiateDiscoveryPlugins ... pluginFactory`
+  - Added runtime log de-duplication for remaining WASM stdout/stderr lines.
+
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
 - Play/pause + step + fps input.
