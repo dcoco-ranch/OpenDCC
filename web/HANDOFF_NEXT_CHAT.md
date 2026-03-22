@@ -23,12 +23,14 @@ Branch: `develop`
     - drag & drop connect/disconnect between shader nodes and material outputs
     - node creation from shader library
     - node deletion (button + Delete key)
+    - selected-node input value editing (`set_input`) for constant authoring
   - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
     - `GET /api/node_graph/library`
     - `POST /api/node_graph/create_node`
     - `POST /api/node_graph/delete_node`
     - `POST /api/node_graph/connect`
     - `POST /api/node_graph/disconnect`
+    - `POST /api/node_graph/set_input`
   - quick action when no material: `+ Create & Bind PreviewSurface`
 - External reference inspected: `cubiq/Mellon`
   - React Flow UX cues used as target for next polish pass (readability/controls/minimap style).
@@ -80,7 +82,7 @@ Branch: `develop`
 1. Node Editor web (Phase 4.3) — continue after MVP
    - improve graph layout/readability (Mellon-inspired UX polish)
    - harden detached/split/fullscreen behavior under heavy scene reloads
-   - keep mode static for now (no dynamic connect/disconnect authoring in this step)
+   - add advanced UX: minimap, context add menu, multi-select node ops
 2. UV Editor web MVP (Phase 4.2)
    - basic UV display and transform tools
 3. MaterialX / vendor material workflows
@@ -115,6 +117,12 @@ Branch: `develop`
   - `/api/material/{matPath}/texture` (connect/clear texture slot)
 - Node graph:
   - `/api/node_graph/{primPath}` (minimal UsdShade network nodes/edges for bound material)
+  - `/api/node_graph/library`
+  - `/api/node_graph/create_node`
+  - `/api/node_graph/delete_node`
+  - `/api/node_graph/connect`
+  - `/api/node_graph/disconnect`
+  - `/api/node_graph/set_input`
 - Layer/export ops:
   - `/api/stage/save_edits_as` (export current edits layer)
 - Keyframe ops:

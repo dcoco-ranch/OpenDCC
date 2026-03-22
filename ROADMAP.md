@@ -115,6 +115,7 @@
 - [x] Stabilisation rendu (anti-flicker, refresh debounced, skip re-render no-op)
 - [x] Connexions dynamiques drag & drop (connect/disconnect) avec authoring USD immédiat
 - [x] Création / suppression de nodes shader dans le graphe
+- [x] Édition des valeurs d’inputs shader (constantes) depuis le workbench
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)
 - [x] Syntax highlighting Python (CodeMirror, fallback textarea si CDN indisponible)

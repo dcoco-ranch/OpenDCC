@@ -413,6 +413,32 @@
       height: 100%;
       display: block;
     }
+    #node-inspector {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #202020;
+      padding: 6px;
+      max-height: 180px;
+      overflow: auto;
+      font-size: 10px;
+    }
+    .node-inp-row {
+      display: grid;
+      grid-template-columns: 120px 1fr auto;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .node-inp-row input {
+      height: 22px;
+      min-width: 0;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 11px;
+    }
     #node-workbench svg text {
       user-select: none;
       pointer-events: none;
@@ -3340,7 +3366,11 @@ function _nodeGraphSignature(primPath, data) {
       bound: !!(data && data.bound),
       material: data && data.material ? (data.material.path || '') : '',
       nodes: data && Array.isArray(data.nodes) ? data.nodes.map(function(n) {
-        return [n.id, n.type, n.shaderId || '', (n.inputs || []).length, (n.outputs || []).length];
+        var ins = (n.inputs || []).map(function(i) {
+          return [i.name || '', i.type || '', i.value == null ? '' : String(i.value), i.sourceNode || '', i.sourceOutput || ''];
+        });
+        var outs = (n.outputs || []).map(function(o) { return [o.name || '', o.type || '']; });
+        return [n.id, n.type, n.shaderId || '', ins, outs];
       }) : [],
       edges: data && Array.isArray(data.edges) ? data.edges.map(function(e) {
         return [e.source, e.sourceOutput || '', e.target, e.targetInput || ''];
@@ -3384,6 +3414,107 @@ async function _deleteSelectedNodeInWorkbench() {
   _nodeWorkbenchState.signature = '';
   await loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
   return true;
+}
+
+function _nodeParseInlineValue(raw) {
+  var txt = String(raw == null ? '' : raw).trim();
+  if (!txt.length) return '';
+  if (txt === 'true') return true;
+  if (txt === 'false') return false;
+  if (txt === 'null') return null;
+  var n = Number(txt);
+  if (Number.isFinite(n) && /^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(txt)) return n;
+  if (txt[0] === '[' || txt[0] === '{' || txt[0] === '"') {
+    try { return JSON.parse(txt); } catch (_) {}
+  }
+  return txt;
+}
+
+function _nodeRenderSelectedNodeEditor(node) {
+  var box = document.getElementById('node-inspector');
+  if (!box) return;
+
+  if (!node || !node.__nodePath) {
+    box.innerHTML = '<div style="color:var(--text2)">Select a node to inspect/edit inputs.</div>';
+    return;
+  }
+
+  var dataNode = node.__nodeData || {};
+  var inps = Array.isArray(dataNode.inputs) ? dataNode.inputs : [];
+  var outs = Array.isArray(dataNode.outputs) ? dataNode.outputs : [];
+
+  var title = '<div style="margin-bottom:6px"><b style="color:var(--text)">' + _nodeEsc(dataNode.name || node.title || node.__nodePath)
+    + '</b> <span style="color:var(--text2)">(' + _nodeEsc(dataNode.shaderId || dataNode.type || 'Node') + ')</span></div>';
+
+  if (node.__isMaterial) {
+    box.innerHTML = title + '<div style="color:var(--text2)">Material output node (connect shader outputs to these inputs).</div>';
+    return;
+  }
+
+  if (!inps.length) {
+    box.innerHTML = title + '<div style="color:var(--text2)">No inputs.</div>';
+    return;
+  }
+
+  box.innerHTML = title;
+
+  inps.forEach(function(inp) {
+    var row = document.createElement('div');
+    row.className = 'node-inp-row';
+
+    var left = document.createElement('div');
+    left.style.color = 'var(--text2)';
+    left.textContent = inp.name + ' : ' + (inp.type || '*');
+
+    var mid = document.createElement('div');
+
+    if (inp.sourceNode) {
+      mid.style.color = 'var(--accent)';
+      mid.textContent = 'connected ← ' + inp.sourceNode.split('/').pop() + '.' + (inp.sourceOutput || '?');
+      row.appendChild(left);
+      row.appendChild(mid);
+      row.appendChild(document.createElement('div'));
+      box.appendChild(row);
+      return;
+    }
+
+    var field = document.createElement('input');
+    field.type = 'text';
+    field.value = (inp.value == null ? '' : String(inp.value));
+    field.placeholder = 'value';
+    mid.appendChild(field);
+
+    var btn = document.createElement('button');
+    btn.textContent = 'Set';
+    btn.style.cssText = 'padding:1px 6px;font-size:10px';
+    btn.onclick = async function() {
+      _suppressMatWsUntil = Date.now() + 250;
+      var res = await api('/api/node_graph/set_input', 'POST', {
+        node_path: node.__nodePath,
+        input_name: inp.name,
+        value: _nodeParseInlineValue(field.value),
+      });
+      if (!res || !res.ok) {
+        setStatus('Set input failed: ' + inp.name, true);
+        return;
+      }
+      setStatus('Input set: ' + inp.name);
+      _nodeWorkbenchState.signature = '';
+      await loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+    };
+
+    row.appendChild(left);
+    row.appendChild(mid);
+    row.appendChild(btn);
+    box.appendChild(row);
+  });
+
+  if (outs.length) {
+    var outLine = document.createElement('div');
+    outLine.style.cssText = 'margin-top:4px;color:var(--text2)';
+    outLine.textContent = 'Outputs: ' + outs.map(function(o) { return o.name; }).join(', ');
+    box.appendChild(outLine);
+  }
 }
 
 function _nodeSetToolbarEnabled(enabled) {
@@ -3451,9 +3582,14 @@ function _nodeEnsureWorkbenchLayout(host) {
   canvas.id = 'node-canvas';
   wrap.appendChild(canvas);
 
+  var inspector = document.createElement('div');
+  inspector.id = 'node-inspector';
+  inspector.innerHTML = '<div style="color:var(--text2)">Select a node to inspect/edit inputs.</div>';
+
   host.appendChild(toolbar);
   host.appendChild(msg);
   host.appendChild(wrap);
+  host.appendChild(inspector);
 
   _nodeGraphUi.host = host;
   _nodeGraphUi.canvasEl = canvas;
@@ -3495,6 +3631,12 @@ function _nodeEnsureWorkbenchLayout(host) {
     graphCanvas.clear_background = true;
     graphCanvas.allow_interaction = true;
     graphCanvas.always_render_background = true;
+    graphCanvas.onNodeSelected = function(n) {
+      _nodeRenderSelectedNodeEditor(n || null);
+    };
+    graphCanvas.onNodeDeselected = function() {
+      _nodeRenderSelectedNodeEditor(null);
+    };
 
     graph.onNodeConnectionChange = async function(type, node, slot, connectedNode, connectedSlot) {
       if (_nodeGraphUi.suppress) return;
@@ -3570,6 +3712,7 @@ function _nodeMakeLiteNode(dataNode, pos) {
   n.__nodePath = dataNode.path || dataNode.id;
   n.__isMaterial = (dataNode.type === 'Material');
   n.__shaderId = dataNode.shaderId || '';
+  n.__nodeData = dataNode;
 
   var kind = n.__isMaterial ? 'material' : _nodeShaderKind(dataNode);
   n.color = '#5d5d5d';
@@ -3632,10 +3775,14 @@ function _nodeBuildInteractiveGraph(data) {
       try { _nodeGraphUi.canvas.selectNode(_nodeGraphUi.nodesByPath[selectedPath], false); } catch (_) {}
     }
 
+    var sel = _nodeGetSelectedLiteNode();
+    _nodeRenderSelectedNodeEditor(sel || null);
+
     try { _nodeGraphUi.canvas.resize(); } catch (_) {}
     return true;
   } catch (_) {
     _nodeGraphUi.suppress = false;
+    _nodeRenderSelectedNodeEditor(null);
     return false;
   }
 }
@@ -3645,6 +3792,7 @@ function _renderNodePanelContent(host, primPath, data) {
 
   var msg = document.getElementById('node-msg');
   var wrap = document.getElementById('node-canvas-wrap');
+  var inspector = document.getElementById('node-inspector');
   if (!msg || !wrap) return;
 
   var info = '<b style="color:var(--text)">Prim</b> ' + _nodeEsc(primPath || '—');
@@ -3653,6 +3801,8 @@ function _renderNodePanelContent(host, primPath, data) {
     msg.innerHTML = info + '<br/>Select a prim to inspect shader graph';
     _nodeSetToolbarEnabled(false);
     if (wrap) wrap.style.display = 'none';
+    if (inspector) inspector.style.display = 'none';
+    _nodeRenderSelectedNodeEditor(null);
     return;
   }
 
@@ -3660,6 +3810,8 @@ function _renderNodePanelContent(host, primPath, data) {
     msg.innerHTML = info + '<br/><span style="color:var(--danger)">Failed to load node graph</span>';
     _nodeSetToolbarEnabled(false);
     if (wrap) wrap.style.display = 'none';
+    if (inspector) inspector.style.display = 'none';
+    _nodeRenderSelectedNodeEditor(null);
     return;
   }
 
@@ -3668,6 +3820,8 @@ function _renderNodePanelContent(host, primPath, data) {
   if (!data.bound) {
     _nodeSetToolbarEnabled(false);
     if (wrap) wrap.style.display = 'none';
+    if (inspector) inspector.style.display = 'none';
+    _nodeRenderSelectedNodeEditor(null);
     msg.innerHTML = info + '<br/>No bound material found on selected prim. '
       + '<button id="node-quick-bind" style="margin-left:6px;padding:1px 6px;font-size:10px">+ Create & Bind PreviewSurface</button>';
 
@@ -3690,12 +3844,15 @@ function _renderNodePanelContent(host, primPath, data) {
 
   _nodeSetToolbarEnabled(true);
   if (wrap) wrap.style.display = 'block';
+  if (inspector) inspector.style.display = 'block';
 
   if (_nodeBuildInteractiveGraph(data)) {
     return;
   }
 
   // Fallback: static SVG if LiteGraph runtime unavailable
+  if (inspector) inspector.style.display = 'none';
+  _nodeRenderSelectedNodeEditor(null);
   wrap.innerHTML = '';
   _renderNodeGraphSvg(wrap, data);
 }

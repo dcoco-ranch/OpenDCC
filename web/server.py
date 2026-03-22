@@ -2144,6 +2144,12 @@ class _NodeDisconnectReq(BaseModel):
     material_output: Optional[str] = None
 
 
+class _NodeSetInputReq(BaseModel):
+    node_path: str
+    input_name: str
+    value: Any
+
+
 @app.get("/api/node_graph/library")
 async def node_graph_library():
     return {"ok": True, "items": _NODE_SHADER_LIBRARY}
@@ -2632,6 +2638,69 @@ async def node_graph_disconnect(req: _NodeDisconnectReq):
         "ok": True,
         "targetPath": target_path or material_path,
         "targetPort": target_port,
+        "materialPath": material_path,
+    }
+
+
+@app.post("/api/node_graph/set_input")
+async def node_graph_set_input(req: _NodeSetInputReq):
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    node_path = "/" + req.node_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(node_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_path}")
+
+    shader = UsdShade.Shader(prim)
+    if not shader:
+        raise HTTPException(status_code=400, detail="Only shader nodes are editable")
+
+    input_name = str(req.input_name or "").strip()
+    if not input_name:
+        raise HTTPException(status_code=400, detail="Missing input_name")
+
+    _pxr_push_undo()
+
+    inp = shader.GetInput(input_name)
+    if not inp:
+        inp = shader.CreateInput(input_name, _node_type_from_name(Sdf, "Token"))
+
+    try:
+        inp.DisconnectSource()
+    except Exception:
+        pass
+
+    try:
+        inp.Set(_coerce_preview_value(inp, req.value))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Set input failed: {exc}")
+
+    material_path = None
+    parent = prim.GetParent()
+    if parent and parent.IsValid() and UsdShade.Material(parent):
+        material_path = str(parent.GetPath())
+
+    await _conns.broadcast({
+        "event": "node_graph_changed",
+        "action": "set_input",
+        "nodePath": node_path,
+        "input": input_name,
+        "materialPath": material_path,
+    })
+    await _conns.broadcast({
+        "event": "material_changed",
+        "materialPath": material_path,
+        "node_graph": True,
+    })
+
+    return {
+        "ok": True,
+        "nodePath": node_path,
+        "input": input_name,
         "materialPath": material_path,
     }
 
