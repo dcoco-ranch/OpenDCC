@@ -80,6 +80,7 @@
 - [ ] Évaluer `pxr.Usd` en WASM (via needle-tools) pour ops côté client sans roundtrip serveur
 - [ ] Stage diff minimal via WebSocket : envoyer uniquement les deltas (pas full reload)
 - [ ] Lazy loading de la hiérarchie (traversée incrémentale `/api/prims?path=...` déjà en place)
+- [x] Auteur non-destructif en pxr mode: edit target vers layer d'overrides sidecar (`*.opendcc_edits.usda`)
 
 ### 3.3 — Modes de rendu
 - [ ] Toggle wireframe / solid / shaded

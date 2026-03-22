@@ -5,11 +5,11 @@ Branch: `develop`
 
 ## Latest commits (newest first)
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
+- `20ade4a` docs(handoff): include material bind+texture milestone commit
 - `77f1186` docs(handoff): add material editor milestone to latest commits
 - `8f7e8bc` feat(material-editor): add dedicated inspector tab with UsdPreviewSurface controls
 - `b455984` docs(handoff): refresh latest commit list after script editor upgrade
 - `6d4f953` feat(script-editor): add CodeMirror python highlighting and autocomplete
-- `320d28f` feat(viewport): add 1/2/3/4 panel presets with multi-view rendering
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
@@ -26,6 +26,11 @@ Branch: `develop`
   - one-click create+bind material for prims with no material
   - shader ID detection flags for MaterialX / vendor networks (read-only for now)
   - immediate viewport preview updates on numeric/color edits
+  - preview scope safety: no global fallback tinting (prevents whole-stage accidental color preview)
+- pxr mode non-destructive authoring layer:
+  - on stage open, edits target a sidecar layer `*.opendcc_edits.usda`
+  - root imported stage remains untouched
+  - `/api/stage/save` saves edit layer (not root) in this mode
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key

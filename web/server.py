@@ -59,19 +59,47 @@ _pxr_available     = False
 _app_core  = None
 _session   = None
 _pxr_stage = None   # Used in pxr-only mode (no opendcc.core)
+_pxr_stage_path: Optional[str] = None
+_pxr_edit_layer = None
+_pxr_edit_layer_path: Optional[str] = None
 
 # Simple undo/redo for pxr mode (USDA snapshot stack)
 _pxr_undo_stack: list = []
 _pxr_redo_stack: list = []
 
 
+def _pxr_snapshot_layer() -> Optional[str]:
+    if not _pxr_stage:
+        return None
+    layer = _pxr_edit_layer if _pxr_edit_layer is not None else _pxr_stage.GetRootLayer()
+    if not layer:
+        return None
+    return layer.ExportToString()
+
+
+def _pxr_restore_layer(usda: str) -> bool:
+    if not _pxr_stage or usda is None:
+        return False
+    layer = _pxr_edit_layer if _pxr_edit_layer is not None else _pxr_stage.GetRootLayer()
+    if not layer:
+        return False
+    layer.ImportFromString(usda)
+    try:
+        _pxr_stage.SetEditTarget(layer)
+    except Exception:
+        pass
+    return True
+
+
 def _pxr_push_undo():
-    """Save current pxr stage state for undo."""
+    """Save current pxr authored layer state for undo."""
     global _pxr_redo_stack
     if not _pxr_stage:
         return
     try:
-        usda = _pxr_stage.GetRootLayer().ExportToString()
+        usda = _pxr_snapshot_layer()
+        if usda is None:
+            return
         _pxr_undo_stack.append(usda)
         _pxr_redo_stack = []  # clear redo on new action
         if len(_pxr_undo_stack) > 30:
@@ -81,34 +109,33 @@ def _pxr_push_undo():
 
 
 def _pxr_do_undo() -> bool:
-    """Restore previous pxr stage state."""
+    """Restore previous pxr authored layer state."""
     global _pxr_stage
     if not _pxr_undo_stack or not _pxr_stage:
         return False
-    from pxr import Usd
-    # Save current for redo
     try:
-        _pxr_redo_stack.append(_pxr_stage.GetRootLayer().ExportToString())
+        cur = _pxr_snapshot_layer()
+        if cur is not None:
+            _pxr_redo_stack.append(cur)
     except Exception:
         pass
     usda = _pxr_undo_stack.pop()
-    _pxr_stage.GetRootLayer().ImportFromString(usda)
-    return True
+    return _pxr_restore_layer(usda)
 
 
 def _pxr_do_redo() -> bool:
-    """Restore next pxr stage state."""
+    """Restore next pxr authored layer state."""
     global _pxr_stage
     if not _pxr_redo_stack or not _pxr_stage:
         return False
-    # Save current for undo
     try:
-        _pxr_undo_stack.append(_pxr_stage.GetRootLayer().ExportToString())
+        cur = _pxr_snapshot_layer()
+        if cur is not None:
+            _pxr_undo_stack.append(cur)
     except Exception:
         pass
     usda = _pxr_redo_stack.pop()
-    _pxr_stage.GetRootLayer().ImportFromString(usda)
-    return True
+    return _pxr_restore_layer(usda)
 
 
 def _init_opendcc() -> None:
@@ -588,6 +615,42 @@ def _current_stage():
     return None
 
 
+def _configure_pxr_edit_layer(stage, stage_path: str):
+    """Configure a non-destructive sidecar edit layer for pxr mode.
+
+    Edits are authored in a stronger layer (`*.opendcc_edits.usda`) referenced
+    by the stage session layer. The imported root layer remains untouched.
+    """
+    from pxr import Sdf
+
+    global _pxr_edit_layer, _pxr_edit_layer_path
+
+    if not stage or not stage_path:
+        _pxr_edit_layer = None
+        _pxr_edit_layer_path = None
+        return
+
+    stage_dir = os.path.dirname(stage_path)
+    base = os.path.splitext(os.path.basename(stage_path))[0]
+    edit_path = os.path.join(stage_dir, f"{base}.opendcc_edits.usda")
+
+    layer = Sdf.Layer.FindOrOpen(edit_path)
+    if not layer:
+        layer = Sdf.Layer.CreateNew(edit_path)
+
+    session = stage.GetSessionLayer()
+    rel = os.path.relpath(edit_path, stage_dir).replace("\\", "/")
+    paths = list(session.subLayerPaths)
+    if rel not in paths and edit_path not in paths:
+        paths.insert(0, rel)
+        session.subLayerPaths = paths
+
+    stage.SetEditTarget(layer)
+
+    _pxr_edit_layer = layer
+    _pxr_edit_layer_path = edit_path
+
+
 def _make_explicit_mesh(stage, prim_path, shape: str) -> None:
     """Set up explicit mesh points for Cube or Plane (no implicit prims)."""
     from pxr import UsdGeom, Gf, Vt
@@ -866,14 +929,18 @@ async def health():
 )
 async def stage_export_usda(flatten: bool = False):
     """Export the current stage as USDA.
-    
-    By default exports the root layer (preserving composition arcs).
-    Set flatten=true to resolve all references into a single layer.
+
+    Default behavior:
+    - standard mode: root-layer export (composition arcs preserved)
+    - pxr non-destructive edit-layer mode: auto-flatten composed result so
+      session-layer opinions are included in viewport reload payloads.
     """
     stage = _current_stage()
     if stage:
         try:
-            if flatten:
+            force_flatten = bool(_pxr_available and stage is _pxr_stage and _pxr_edit_layer is not None)
+            do_flatten = bool(flatten or force_flatten)
+            if do_flatten:
                 flat_layer = stage.Flatten()
                 usda = flat_layer.ExportToString()
             else:
@@ -906,6 +973,17 @@ async def stage_assets():
     stage = _current_stage()
     if not stage:
         return {"rootLayer": None, "assets": []}
+
+    # In pxr non-destructive edit-layer mode, avoid file-tree composition mode:
+    # viewport reload should consume /api/stage/export.usda (flattened composed view)
+    # so session-layer opinions are not lost.
+    if _pxr_available and stage is _pxr_stage and _pxr_edit_layer is not None:
+        return {
+            "rootLayer": None,
+            "assets": [],
+            "editLayer": _pxr_edit_layer_path,
+            "compositionMode": "flattened_export",
+        }
 
     real_path = stage.GetRootLayer().realPath
     if not real_path or not os.path.exists(real_path):
@@ -1120,7 +1198,7 @@ class _StageOpenReq(BaseModel):
 
 @app.post("/api/stage/open")
 async def stage_open(req: _StageOpenReq):
-    global _pxr_stage
+    global _pxr_stage, _pxr_stage_path, _pxr_edit_layer, _pxr_edit_layer_path
     stages_root = os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
     p = req.path if os.path.isabs(req.path) else os.path.join(stages_root, req.path)
 
@@ -1142,11 +1220,27 @@ async def stage_open(req: _StageOpenReq):
             _pxr_stage = Usd.Stage.Open(p, Usd.Stage.LoadAll)
             if not _pxr_stage:
                 raise HTTPException(status_code=400, detail=f"Failed to open: {p}")
+
+            _pxr_stage_path = p
+            _configure_pxr_edit_layer(_pxr_stage, p)
+            _pxr_undo_stack.clear()
+            _pxr_redo_stack.clear()
+
             prim_count = sum(1 for _ in _pxr_stage.TraverseAll())
-            logger.info("Opened stage: %s (%d prims)", p, prim_count)
+            logger.info(
+                "Opened stage: %s (%d prims) | edit layer: %s",
+                p,
+                prim_count,
+                _pxr_edit_layer_path or "<none>",
+            )
             await _conns.broadcast({"event": "stage_opened", "path": p})
             await _conns.broadcast({"event": "scene_changed"})
-            return {"ok": True, "path": p}
+            return {
+                "ok": True,
+                "path": p,
+                "edit_layer": _pxr_edit_layer_path,
+                "non_destructive": bool(_pxr_edit_layer_path),
+            }
         except HTTPException:
             raise
         except Exception as exc:
@@ -1160,11 +1254,16 @@ async def stage_open(req: _StageOpenReq):
 
 @app.post("/api/stage/new")
 async def stage_new():
-    global _pxr_stage
+    global _pxr_stage, _pxr_stage_path, _pxr_edit_layer, _pxr_edit_layer_path
     if _opendcc_available:
         _session.new_stage()
     elif _pxr_available:
         _init_default_pxr_stage()
+        _pxr_stage_path = None
+        _pxr_edit_layer = None
+        _pxr_edit_layer_path = None
+        _pxr_undo_stack.clear()
+        _pxr_redo_stack.clear()
     else:
         _stub_stage._reset()
     await _conns.broadcast({"event": "stage_new"})
@@ -1174,13 +1273,30 @@ async def stage_new():
 
 @app.post("/api/stage/save")
 async def stage_save():
-    if not _opendcc_available:
-        return {"ok": True, "stub": True}
-    try:
-        _session.save_stage()
-        return {"ok": True}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    if _opendcc_available:
+        try:
+            _session.save_stage()
+            return {"ok": True}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    if _pxr_available and _pxr_stage:
+        try:
+            if _pxr_edit_layer is not None:
+                _pxr_edit_layer.Save()
+                return {
+                    "ok": True,
+                    "saved": "edit_layer",
+                    "layer_path": _pxr_edit_layer_path,
+                    "non_destructive": True,
+                }
+
+            _pxr_stage.GetRootLayer().Save()
+            return {"ok": True, "saved": "root_layer", "non_destructive": False}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"ok": True, "stub": True}
 
 
 @app.get("/api/stage/info")
@@ -1189,11 +1305,20 @@ async def stage_info():
     if not stage:
         return {"stage": None}
     from pxr import UsdGeom
+    edit_layer = None
+    try:
+        et = stage.GetEditTarget().GetLayer()
+        if et:
+            edit_layer = et.identifier
+    except Exception:
+        pass
+
     return {
         "stage": {
             "identifier": stage.GetRootLayer().identifier,
             "prim_count":  sum(1 for _ in stage.TraverseAll()),
             "up_axis":     str(UsdGeom.GetStageUpAxis(stage)),
+            "edit_layer":  edit_layer,
         }
     }
 

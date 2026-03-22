@@ -2236,13 +2236,40 @@ function _materialTextureSlots(params) {
 }
 
 function _foreachPreviewMaterial(fn) {
-  var target = (window._gizmo && window._gizmo.object) ? window._gizmo.object : window._usdRoot;
-  if (!target) return;
-  target.traverse(function(obj) {
-    if (!obj.isMesh || !obj.material) return;
-    var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    mats.forEach(fn);
-  });
+  var selPath = (_selectedPaths && _selectedPaths.length) ? _selectedPaths[_selectedPaths.length - 1] : null;
+  var gizObj = (window._gizmo && window._gizmo.object) ? window._gizmo.object : null;
+  var usdRoot = window._usdRoot;
+  if (!usdRoot) return;
+
+  var matched = 0;
+
+  // Prefer precise prim-path filtering when Hydra delegate provides path metadata.
+  if (selPath) {
+    usdRoot.traverse(function(obj) {
+      if (!obj.isMesh || !obj.material) return;
+      var p = (obj.userData && obj.userData.path) ? String(obj.userData.path) : '';
+      if (!p) return;
+      if (p === selPath || p.startsWith(selPath + '/')) {
+        var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(fn);
+        matched++;
+      }
+    });
+  }
+
+  if (matched > 0) return;
+
+  // Fallback: limit preview to gizmo-attached object subtree only.
+  if (gizObj) {
+    gizObj.traverse(function(obj) {
+      if (!obj.isMesh || !obj.material) return;
+      var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(fn);
+      matched++;
+    });
+  }
+
+  // No global fallback on purpose (prevents accidental whole-scene tinting).
 }
 
 function _applyMaterialPreview(paramName, value) {
