@@ -32,6 +32,7 @@ Branch: `develop`
     - node workbench grid overlay + optional snap-to-grid toggle
     - snap fix: bound to LiteGraph canvas move callback + align_to_grid
     - MaterialX accessibility pass: material terminals (including context outputs) + read-only shader graph inputs in Material panel
+    - viewport fallback pass for MaterialX standard_surface: alias key inputs to preview-style channels + neutral non-pink fallback material with optional base-color texture hookup
   - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
     - `GET /api/node_graph/library`
     - `POST /api/node_graph/create_node`

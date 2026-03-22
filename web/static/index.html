@@ -791,6 +791,26 @@ import { ThreeRenderDelegateInterface }
   if (window.__opendccHydraMatFallbackPatched) return;
   window.__opendccHydraMatFallbackPatched = true;
 
+  function _aliasNodeParam(node, dst, src) {
+    if (!node || Object.prototype.hasOwnProperty.call(node, dst)) return;
+    try {
+      Object.defineProperty(node, dst, {
+        configurable: true,
+        enumerable: false,
+        get: function() { return this[src]; },
+        set: function(v) { this[src] = v; },
+      });
+    } catch (_) {}
+  }
+
+  function _applyStandardSurfaceAliases(node) {
+    if (!node) return;
+    _aliasNodeParam(node, 'diffuseColor', 'base_color');
+    _aliasNodeParam(node, 'roughness', 'specular_roughness');
+    _aliasNodeParam(node, 'metallic', 'metalness');
+    _aliasNodeParam(node, 'emissiveColor', 'emission_color');
+  }
+
   try {
     var proto = ThreeRenderDelegateInterface && ThreeRenderDelegateInterface.prototype;
     if (!proto || typeof proto.createRPrim !== 'function') return;
@@ -813,6 +833,11 @@ import { ThreeRenderDelegateInterface }
           // Delegate fallback material key observed in HydraMaterial map
           var fallback = mats && (mats[''] || mats['/__fallback__']);
           if (fallback && fallback._material && this._mesh) {
+            try {
+              if (fallback._material.name === 'DefaultMaterial' && fallback._material.color) {
+                fallback._material.color.setHex(0x777777); // neutral instead of pink
+              }
+            } catch (_) {}
             this._mesh.material = fallback._material;
             return;
           }
@@ -824,6 +849,82 @@ import { ThreeRenderDelegateInterface }
       } catch (_) {}
       return prim;
     };
+
+    if (typeof proto.createSPrim === 'function') {
+      var _origCreateSPrim = proto.createSPrim;
+      proto.createSPrim = function(typeId, id) {
+        var s = _origCreateSPrim.call(this, typeId, id);
+        try {
+          if (!s || s.__opendccMtlxPatched) return s;
+
+          if (typeof s.updateNode === 'function') {
+            var _origUpdateNode = s.updateNode;
+            s.updateNode = function(networkId, path, parameters) {
+              var out = _origUpdateNode.call(this, networkId, path, parameters);
+              try {
+                var n = this._nodes && this._nodes[path];
+                _applyStandardSurfaceAliases(n || parameters);
+              } catch (_) {}
+              return out;
+            };
+          }
+
+          if (typeof s.updateFinished === 'function') {
+            var _origUpdateFinished = s.updateFinished;
+            s.updateFinished = async function(type, relationships) {
+              try {
+                if (this._nodes) {
+                  Object.values(this._nodes).forEach(_applyStandardSurfaceAliases);
+                }
+              } catch (_) {}
+
+              var out = await _origUpdateFinished.call(this, type, relationships);
+
+              // Last resort fallback: build a neutral PBR from base_color if
+              // delegate still ended on DefaultMaterial.
+              try {
+                if (this._material && this._material.name === 'DefaultMaterial' && this._nodes) {
+                  var main = Object.values(this._nodes).find(function(n) {
+                    return !!(n && (n.base_color || n.diffuseColor));
+                  });
+                  if (main) {
+                    var m = new THREE.MeshPhysicalMaterial({
+                      side: THREE.DoubleSide,
+                      color: new THREE.Color(0x888888),
+                      roughness: 0.6,
+                      metalness: 0.0,
+                      name: (this._id || 'MaterialX') + '_fallback',
+                    });
+
+                    var c = main.base_color || main.diffuseColor;
+                    if (Array.isArray(c) && c.length >= 3) {
+                      m.color = new THREE.Color().fromArray(c);
+                    }
+
+                    if (c && c.nodeIn && c.nodeIn.resolvedPath && this._interface && this._interface.registry) {
+                      var texFile = String(c.nodeIn.resolvedPath).replace('./', '');
+                      this._interface.registry.getTexture(texFile).then(function(tex) {
+                        m.map = tex;
+                        m.color.setHex(0xffffff);
+                        m.needsUpdate = true;
+                      }).catch(function() {});
+                    }
+
+                    this._material = m;
+                  }
+                }
+              } catch (_) {}
+
+              return out;
+            };
+          }
+
+          s.__opendccMtlxPatched = true;
+        } catch (_) {}
+
+        return s;
+      };
+    }
   } catch (_) {}
 })();
 
