@@ -2064,6 +2064,24 @@ async function curveMoveSelectedKeyToCurrent() {
             (window._formatTimeCode ? window._formatTimeCode(toT) : toT));
 }
 
+async function curveSetInterpolationMode(mode) {
+  if (!_curveState.primPath || !_curveState.selectedAttr) return;
+  var m = String(mode || '').toLowerCase();
+  if (m !== 'linear' && m !== 'step' && m !== 'bezier') return;
+
+  var key = _curveState.primPath.replace(/^\//, '');
+  var res = await api('/api/prim/' + key + '/keyframe/interpolation', 'POST', {
+    attribute: _curveState.selectedAttr,
+    mode: m,
+  });
+  if (!res.ok) return;
+
+  var attr = _getCurveAttrByName(_curveState.selectedAttr);
+  if (attr) attr.interpolation = m;
+  _renderCurveFromState(_curveState.currentTime);
+  setStatus('Interpolation: ' + _curveState.selectedAttr + ' → ' + m);
+}
+
 function _renderCurveFromState(timeCode) {
   var svg = document.getElementById('curve-svg');
   if (!svg) return;
@@ -2107,7 +2125,44 @@ function _renderCurveFromState(timeCode) {
   function sx(t) { return pad + ((t - tMin) / (tMax - tMin)) * (w - pad * 2); }
   function sy(v) { return (h - pad) - ((v - vMin) / (vMax - vMin)) * (h - pad * 2); }
 
+  var mode = String(attr.interpolation || 'linear').toLowerCase();
+  if (mode !== 'linear' && mode !== 'step' && mode !== 'bezier') mode = 'linear';
+
   var points = numeric.map(function(s) { return sx(s.time).toFixed(2) + ',' + sy(s.value).toFixed(2); }).join(' ');
+
+  var stepPoints = '';
+  if (mode === 'step') {
+    var p = [];
+    if (numeric.length) p.push(sx(numeric[0].time).toFixed(2) + ',' + sy(numeric[0].value).toFixed(2));
+    for (var si = 0; si < numeric.length - 1; si++) {
+      var a = numeric[si], b = numeric[si + 1];
+      p.push(sx(b.time).toFixed(2) + ',' + sy(a.value).toFixed(2));
+      p.push(sx(b.time).toFixed(2) + ',' + sy(b.value).toFixed(2));
+    }
+    stepPoints = p.join(' ');
+  }
+
+  var bezierPath = '';
+  if (mode === 'bezier') {
+    var d = '';
+    for (var bi = 0; bi < numeric.length; bi++) {
+      var cur = numeric[bi];
+      var cx = sx(cur.time), cy = sy(cur.value);
+      if (bi === 0) {
+        d += 'M' + cx.toFixed(2) + ' ' + cy.toFixed(2) + ' ';
+      } else {
+        var prev = numeric[bi - 1];
+        var px = sx(prev.time), py = sy(prev.value);
+        var c1x = px + (cx - px) / 3;
+        var c1y = py;
+        var c2x = px + 2 * (cx - px) / 3;
+        var c2y = cy;
+        d += 'C' + c1x.toFixed(2) + ' ' + c1y.toFixed(2) + ', ' + c2x.toFixed(2) + ' ' + c2y.toFixed(2) + ', ' + cx.toFixed(2) + ' ' + cy.toFixed(2) + ' ';
+      }
+    }
+    bezierPath = d.trim();
+  }
+
   var selectedTime = Number(_curveState.selectedKeyTime);
   var circles = numeric.map(function(s) {
     var isSel = Number.isFinite(selectedTime) && Math.abs(selectedTime - s.time) < 1e-6;
@@ -2124,15 +2179,24 @@ function _renderCurveFromState(timeCode) {
     currentLine = '<line x1="' + x.toFixed(2) + '" y1="' + pad + '" x2="' + x.toFixed(2) + '" y2="' + (h - pad) + '" stroke="#c2a45a" stroke-width="1" />';
   }
 
+  var curveShape = '';
+  if (mode === 'step') {
+    curveShape = '<polyline points="' + stepPoints + '" fill="none" stroke="#8ec3ff" stroke-width="1.5" />';
+  } else if (mode === 'bezier') {
+    curveShape = '<path d="' + bezierPath + '" fill="none" stroke="#8ec3ff" stroke-width="1.5" />';
+  } else {
+    curveShape = '<polyline points="' + points + '" fill="none" stroke="#8ec3ff" stroke-width="1.5" />';
+  }
+
   svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
   svg.innerHTML = ''
     + '<rect x="0" y="0" width="' + w + '" height="' + h + '" fill="#1d1d1d" stroke="#3a3a3a" />'
     + '<line x1="' + pad + '" y1="' + (h - pad) + '" x2="' + (w - pad) + '" y2="' + (h - pad) + '" stroke="#555" />'
     + '<line x1="' + pad + '" y1="' + pad + '" x2="' + pad + '" y2="' + (h - pad) + '" stroke="#555" />'
     + currentLine
-    + '<polyline points="' + points + '" fill="none" stroke="#8ec3ff" stroke-width="1.5" />'
+    + curveShape
     + circles
-    + '<text x="6" y="12" fill="#aaa" font-size="10">' + _curveEsc(attr.name) + ' (' + numeric.length + ' keys)</text>'
+    + '<text x="6" y="12" fill="#aaa" font-size="10">' + _curveEsc(attr.name) + ' (' + numeric.length + ' keys, ' + mode + ')</text>'
     + '<text x="6" y="' + (h - 4) + '" fill="#777" font-size="9">t:[' + tMin.toFixed(2) + ',' + tMax.toFixed(2) + ']  v:[' + vMin.toFixed(3) + ',' + vMax.toFixed(3) + ']</text>';
 
   _updateCurveKeyStatus(attr, numeric);
@@ -2227,6 +2291,23 @@ async function loadCurvePanel(primPath, timeCode) {
   moveBtn.style.padding = '1px 6px';
   moveBtn.addEventListener('click', function() { curveMoveSelectedKeyToCurrent(); });
 
+  var interpLabel = document.createElement('span');
+  interpLabel.textContent = 'Interp:';
+  interpLabel.style.color = 'var(--text2)';
+
+  var interpSelect = document.createElement('select');
+  interpSelect.id = 'curve-interp-select';
+  interpSelect.style.cssText = 'height:20px;margin:0;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:10px;padding:1px 4px;border-radius:3px;';
+  ['linear','step','bezier'].forEach(function(m) {
+    var o = document.createElement('option');
+    o.value = m;
+    o.textContent = m;
+    interpSelect.appendChild(o);
+  });
+  var selectedAttr = _getCurveAttrByName(_curveState.selectedAttr);
+  interpSelect.value = (selectedAttr && selectedAttr.interpolation) ? String(selectedAttr.interpolation).toLowerCase() : 'linear';
+  interpSelect.addEventListener('change', function() { curveSetInterpolationMode(this.value); });
+
   var valueLabel = document.createElement('span');
   valueLabel.textContent = 'Value:';
   valueLabel.style.color = 'var(--text2)';
@@ -2246,6 +2327,8 @@ async function loadCurvePanel(primPath, timeCode) {
   controls.appendChild(addBtn);
   controls.appendChild(delBtn);
   controls.appendChild(moveBtn);
+  controls.appendChild(interpLabel);
+  controls.appendChild(interpSelect);
   controls.appendChild(valueLabel);
   controls.appendChild(valueInput);
   controls.appendChild(status);

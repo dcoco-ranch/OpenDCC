@@ -626,11 +626,38 @@ def _prim_to_dict(prim) -> dict:
     }
 
 
+def _get_attr_interpolation_mode(attr) -> str:
+    """Return curve interpolation mode stored in custom data.
+
+    Supported: linear, step, bezier (bezier is display/edit hint for now).
+    """
+    try:
+        mode = attr.GetCustomDataByKey("opendcc:interp")
+        if isinstance(mode, str):
+            mode = mode.strip().lower()
+            if mode in {"linear", "step", "bezier"}:
+                return mode
+    except Exception:
+        pass
+    return "linear"
+
+
 def _attr_to_dict(attr, time: Optional[float] = None) -> dict:
+    interpolation = _get_attr_interpolation_mode(attr)
     try:
         if time is not None:
             from pxr import Usd
-            val = str(attr.Get(Usd.TimeCode(time)))
+            # Step mode: evaluate at lower bracketing sample when possible
+            if interpolation == "step":
+                times = list(attr.GetTimeSamples() or [])
+                if times:
+                    lower, _upper = attr.GetBracketingTimeSamples(float(time))
+                    val = attr.Get(Usd.TimeCode(float(lower)))
+                else:
+                    val = attr.Get(Usd.TimeCode(time))
+            else:
+                val = attr.Get(Usd.TimeCode(time))
+            val = str(val)
         else:
             val = str(attr.Get())
     except Exception:
@@ -640,6 +667,7 @@ def _attr_to_dict(attr, time: Optional[float] = None) -> dict:
         "type":        str(attr.GetTypeName()),
         "value":       val,
         "variability": str(attr.GetVariability()),
+        "interpolation": interpolation,
     }
 
 
@@ -1276,6 +1304,7 @@ async def prim_time_samples(prim_path: str, max_samples: int = 400):
                 "name": attr.GetName(),
                 "type": str(attr.GetTypeName()),
                 "sample_count": len(times),
+                "interpolation": _get_attr_interpolation_mode(attr),
                 "samples": samples,
             })
 
@@ -1446,6 +1475,45 @@ class _KeyframeMoveReq(BaseModel):
     attribute: str
     from_time: float
     to_time: float
+
+
+class _KeyframeInterpolationReq(BaseModel):
+    attribute: str
+    mode: str
+
+
+@app.post("/api/prim/{prim_path:path}/keyframe/interpolation")
+async def prim_set_keyframe_interpolation(prim_path: str, req: _KeyframeInterpolationReq):
+    full_path = "/" + prim_path.lstrip("/")
+
+    mode = str(req.mode or "").strip().lower()
+    if mode not in {"linear", "step", "bezier"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported interpolation mode: {req.mode}")
+
+    stage = _current_stage()
+    if stage:
+        _pxr_push_undo()
+        from pxr import Sdf
+
+        prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+        if not prim or not prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+        attr = prim.GetAttribute(req.attribute)
+        if not attr or not attr.IsValid():
+            raise HTTPException(status_code=404, detail=f"Attribute not found: {req.attribute}")
+
+        try:
+            attr.SetCustomDataByKey("opendcc:interp", mode)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Set interpolation failed: {exc}")
+
+        await _conns.broadcast({
+            "event": "scene_changed", "primPath": full_path, "attribute": req.attribute,
+        })
+        return {"ok": True, "path": full_path, "attribute": req.attribute, "mode": mode}
+
+    return {"ok": True, "stub": True, "mode": mode}
 
 
 @app.post("/api/prim/{prim_path:path}/keyframe/set")

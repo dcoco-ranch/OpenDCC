@@ -127,7 +127,7 @@
 ### 5.2 — Curve Editor web (remplace `opendcc.anim_engine.ui.graph_editor`)
 - [x] Canvas 2D pour afficher les courbes d'animation (preview time-sampled attributes)
 - [x] Édition de keyframes : ajout, suppression, déplacement (version basique)
-- [ ] Types d'interpolation : linear, bezier, step
+- [x] Types d'interpolation : linear, bezier, step (preview + mode persistant)
 
 ---
 
