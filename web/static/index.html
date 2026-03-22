@@ -926,6 +926,39 @@ import { ThreeRenderDelegateInterface }
     _aliasNodeParam(node, 'emissiveColor', 'emission_color');
   }
 
+  function _pickMaterialXMainNode(nodesObj) {
+    try {
+      var nodes = Object.values(nodesObj || {});
+      if (!nodes.length) return null;
+
+      var keyOrder = [
+        'base_color', 'diffuseColor',
+        'specular_roughness', 'roughness',
+        'metalness', 'metallic',
+        'normal', 'emission_color', 'emissiveColor'
+      ];
+
+      var scored = nodes.map(function(n) {
+        if (!n || typeof n !== 'object') return { node: n, score: -1 };
+        var s = 0;
+        for (var i = 0; i < keyOrder.length; i++) {
+          var k = keyOrder[i];
+          if (Object.prototype.hasOwnProperty.call(n, k) && n[k] != null) s += (i < 2 ? 4 : 2);
+        }
+        if (Object.prototype.hasOwnProperty.call(n, 'base')) s += 1;
+        if (Object.prototype.hasOwnProperty.call(n, 'specular')) s += 1;
+        if (Object.prototype.hasOwnProperty.call(n, 'surface')) s += 1;
+        return { node: n, score: s };
+      });
+
+      scored.sort(function(a, b) { return (b.score - a.score); });
+      if (scored[0] && scored[0].score > 0) return scored[0].node;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function _sanitizeAssetToken(rawPath) {
     return String(rawPath || '')
       .trim()
@@ -941,12 +974,18 @@ import { ThreeRenderDelegateInterface }
     var visited = new Set();
     var cur = entry;
 
-    for (var depth = 0; depth < 24; depth++) {
+    function _take(v) {
+      if (typeof v !== 'string') return null;
+      var s = _sanitizeAssetToken(v);
+      return texRe.test(s) ? s : null;
+    }
+
+    for (var depth = 0; depth < 32; depth++) {
       if (!cur) break;
 
       if (typeof cur === 'string') {
-        var s0 = _sanitizeAssetToken(cur);
-        if (texRe.test(s0)) return s0;
+        var s0 = _take(cur);
+        if (s0) return s0;
         break;
       }
 
@@ -954,31 +993,23 @@ import { ThreeRenderDelegateInterface }
       if (visited.has(cur)) break;
       visited.add(cur);
 
-      if (typeof cur.resolvedPath === 'string') {
-        var s1 = _sanitizeAssetToken(cur.resolvedPath);
-        if (texRe.test(s1)) return s1;
+      var cand = _take(cur.resolvedPath) || _take(cur.value) || _take(cur.file) || _take(cur.path) || _take(cur.asset) || _take(cur.filename) || _take(cur.uri);
+      if (cand) return cand;
+
+      if (cur.value && typeof cur.value === 'object') {
+        cur = cur.value;
+        continue;
       }
-      if (typeof cur.value === 'string') {
-        var s2 = _sanitizeAssetToken(cur.value);
-        if (texRe.test(s2)) return s2;
-      }
-      if (typeof cur.file === 'string') {
-        var s3 = _sanitizeAssetToken(cur.file);
-        if (texRe.test(s3)) return s3;
-      }
+
       if (cur.file && typeof cur.file === 'object') {
-        if (typeof cur.file.resolvedPath === 'string') {
-          var s4 = _sanitizeAssetToken(cur.file.resolvedPath);
-          if (texRe.test(s4)) return s4;
-        }
-        if (typeof cur.file.value === 'string') {
-          var s5 = _sanitizeAssetToken(cur.file.value);
-          if (texRe.test(s5)) return s5;
-        }
+        cand = _take(cur.file.resolvedPath) || _take(cur.file.value) || _take(cur.file.path) || _take(cur.file.asset);
+        if (cand) return cand;
         if (cur.file.nodeIn) {
           cur = cur.file.nodeIn;
           continue;
         }
+        cur = cur.file;
+        continue;
       }
 
       if (cur.nodeIn) {
@@ -990,8 +1021,9 @@ import { ThreeRenderDelegateInterface }
       for (var k in cur) {
         if (!Object.prototype.hasOwnProperty.call(cur, k)) continue;
         var v = cur[k];
-        if (!v || typeof v !== 'object') continue;
-        if (v.nodeIn || v.file || typeof v.value === 'string' || typeof v.resolvedPath === 'string') {
+        if (!v) continue;
+        if (typeof v === 'string' && _take(v)) return _take(v);
+        if (typeof v === 'object' && (v.nodeIn || v.file || v.value || v.resolvedPath || v.path || v.asset || v.filename || v.uri)) {
           next = v;
           break;
         }
@@ -1119,9 +1151,7 @@ import { ThreeRenderDelegateInterface }
               var mainNode = null;
               try {
                 if (this._nodes) {
-                  mainNode = Object.values(this._nodes).find(function(n) {
-                    return !!(n && (n.base_color || n.diffuseColor));
-                  }) || null;
+                  mainNode = _pickMaterialXMainNode(this._nodes);
                 }
               } catch (_) {
                 mainNode = null;
