@@ -4,12 +4,12 @@ Date: 2026-03-22
 Branch: `develop`
 
 ## Latest commits (newest first)
+- `8f7e8bc` feat(material-editor): add dedicated inspector tab with UsdPreviewSurface controls
+- `b455984` docs(handoff): refresh latest commit list after script editor upgrade
 - `6d4f953` feat(script-editor): add CodeMirror python highlighting and autocomplete
 - `320d28f` feat(viewport): add 1/2/3/4 panel presets with multi-view rendering
 - `9b78f46` feat(web-ui): add resizable panel splitters and layout persistence
 - `859fc72` feat(curve): add interpolation modes (linear/step/bezier)
-- `47fd729` fix(curve): improve keyframe coercion and move validation
-- `56f3a32` fix(web-ui): prevent grid/statusbar overflow in panel layout
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
