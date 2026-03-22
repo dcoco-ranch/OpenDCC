@@ -803,6 +803,51 @@ import { ThreeRenderDelegateInterface }
     } catch (_) {}
   }
 
+  function _resolveHydraMaterialInMap(mats, materialId) {
+    try {
+      if (!mats || !materialId) return null;
+      if (mats[materialId]) return mats[materialId];
+
+      var mid = String(materialId);
+      var keys = Object.keys(mats || {});
+      if (!keys.length) return null;
+
+      // Common context suffix patterns: ":surface", "@mtlx", ":surface@mtlx"
+      var direct = [
+        mid + ':surface',
+        mid + '@mtlx',
+        mid + ':surface@mtlx',
+      ];
+      for (var i = 0; i < direct.length; i++) {
+        if (mats[direct[i]]) return mats[direct[i]];
+      }
+
+      // Suffix/prefix fuzzy match
+      var byContain = keys.filter(function(k) {
+        var s = String(k || '');
+        return s === mid || s.indexOf(mid) >= 0 || mid.indexOf(s) >= 0;
+      });
+      if (byContain.length) {
+        byContain.sort(function(a, b) { return String(a).length - String(b).length; });
+        return mats[byContain[0]];
+      }
+
+      // Match by basename for materials under the same prim
+      var base = mid.split('/').pop();
+      if (base) {
+        var byBase = keys.filter(function(k) {
+          var s = String(k || '');
+          return s.endsWith('/' + base) || s.indexOf('/' + base + ':') >= 0 || s.indexOf('/' + base + '@') >= 0;
+        });
+        if (byBase.length) {
+          byBase.sort(function(a, b) { return String(a).length - String(b).length; });
+          return mats[byBase[0]];
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   function _patchTextureRegistry(iface) {
     try {
       var reg = iface && iface.registry;
@@ -1014,8 +1059,10 @@ import { ThreeRenderDelegateInterface }
           var iface = this._interface || null;
           var mats = iface && iface.materials ? iface.materials : null;
 
-          if (mats && mats[materialId]) {
-            return _origSetMaterial.call(this, materialId);
+          var resolved = _resolveHydraMaterialInMap(mats, materialId);
+          if (resolved && resolved._material && this._mesh) {
+            this._mesh.material = resolved._material;
+            return;
           }
 
           // Delegate fallback material key observed in HydraMaterial map
