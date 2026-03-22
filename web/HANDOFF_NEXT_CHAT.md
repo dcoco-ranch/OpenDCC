@@ -12,16 +12,20 @@ Branch: `develop`
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 
 ## New in current chat (in progress)
-- Phase 4.3 Node Editor web MVP started:
-  - new backend endpoint `GET /api/node_graph/{prim_path}`
-    - resolves computed bound material for a prim
-    - extracts minimal shader graph (`nodes` + `edges`) from UsdShade network
-    - includes material output links (surface/displacement/volume) + binding metadata
-  - new frontend inspector tab `Node`
-    - dedicated Node panel (separate from Properties/Material)
-    - SVG graph visualization (nodes + directional links)
-    - quick action when no material: `+ Create & Bind PreviewSurface`
-    - refresh integration on `material_changed`
+- Phase 4.3 Node Editor web MVP continued (stability-first):
+  - backend endpoint `GET /api/node_graph/{prim_path}` (from previous commit) kept as graph source
+  - frontend moved to detached viewport workbench (`#node-workbench`):
+    - no longer tied to Properties inspector
+    - modes: `Split` (side-by-side with viewport), `Detached`, `Fullscreen`
+    - static rendering only (no dynamic connect/disconnect interactions)
+  - flicker reduction on node view refresh:
+    - request de-dup/stale-response guard (`reqId`)
+    - graph signature comparison to skip no-op re-renders
+    - preserve previous graph while loading
+    - debounced refresh on `material_changed`
+  - quick action when no material: `+ Create & Bind PreviewSurface`
+- External reference inspected: `cubiq/Mellon`
+  - web bundle shows React Flow-based node UX patterns (styling/minimap/controls), useful reference for next UI iteration.
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
@@ -61,14 +65,16 @@ Branch: `develop`
 ## Current UI organization
 - Left: Outliner
 - Center: Viewport
-- Right: Properties
+- Right: Properties/Material inspector
+- Node Editor: detached viewport workbench (Split / Detached / Fullscreen)
 - Bottom (toggle): Curve Editor panel
 - Status bar timeline at bottom
 
 ## Pending work (high priority)
 1. Node Editor web (Phase 4.3) — continue after MVP
-   - improve graph layout/readability
-   - add node interaction + connection editing drag & drop
+   - improve graph layout/readability (Mellon-inspired UX polish)
+   - harden detached/split/fullscreen behavior under heavy scene reloads
+   - keep mode static for now (no dynamic connect/disconnect authoring in this step)
 2. UV Editor web MVP (Phase 4.2)
    - basic UV display and transform tools
 3. MaterialX / vendor material workflows

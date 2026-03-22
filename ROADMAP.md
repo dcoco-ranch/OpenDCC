@@ -109,9 +109,11 @@
 - [ ] Transformations UV basiques (translate, rotate, scale)
 
 ### 4.3 — Node Editor web (remplace `opendcc.ui.node_editor` + `opendcc.usd_editor.usd_node_editor`)
-- [x] Framework MVP de node graph en canvas/SVG (custom) dans l’inspector
+- [x] Framework MVP de node graph en canvas/SVG (custom) en vue détachée
 - [x] Représentation minimale des `UsdShade` networks (Shader → Material → Binding)
-- [ ] Connection drag & drop entre nodes
+- [x] Modes d’affichage Node Editor: split viewport / detached / fullscreen
+- [x] Stabilisation rendu (anti-flicker, refresh debounced, skip re-render no-op)
+- [ ] Connection drag & drop entre nodes (déféré — mode statique prioritaire)
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)
 - [x] Syntax highlighting Python (CodeMirror, fallback textarea si CDN indisponible)
