@@ -43,6 +43,7 @@
       --panel:     #282828;
       --header-h:  38px;
       --toolbar-h: 34px;
+      --curve-h:   190px;
       --status-h:  22px;
     }
 
@@ -56,9 +57,12 @@
     /* ── App grid ─────────────────────────────────────────────────────── */
     #app {
       display: grid;
-      grid-template-rows: var(--header-h) var(--toolbar-h) 1fr var(--status-h);
+      grid-template-rows: var(--header-h) var(--toolbar-h) 1fr 0px var(--status-h);
       grid-template-columns: 220px 1fr 260px;
       height: 100vh;
+    }
+    #app.curve-open {
+      grid-template-rows: var(--header-h) var(--toolbar-h) 1fr var(--curve-h) var(--status-h);
     }
 
     /* Header */
@@ -90,6 +94,17 @@
     }
     #outliner  { border-right: 1px solid var(--border); }
     #properties{ border-left:  1px solid var(--border); }
+
+    #curve-editor {
+      grid-column: 1 / -1;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      display: none;
+      overflow: hidden;
+      min-height: 0;
+      flex-direction: column;
+    }
+    #app.curve-open #curve-editor { display: flex; }
 
     .panel-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -324,6 +339,7 @@
     <button onclick="saveStage()">Save</button>
     <button onclick="downloadUSDA()" title="Download USDA">⬇ USDA</button>
     <button onclick="downloadGLB()" title="Download GLB">⬇ GLB</button>
+    <button id="btn-curve-panel" onclick="toggleCurvePanel()" title="Toggle Curve Editor panel">Curve Editor</button>
     <button onclick="toggleScript()">Script Editor</button>
   </div>
 
@@ -414,13 +430,28 @@
 
   <!-- ── Properties ─────────────────────────────────────────────────────── -->
   <div id="properties">
-    <div class="panel-header">Properties</div>
+    <div class="panel-header">
+      <span>Properties</span>
+      <button style="padding:1px 6px;font-size:10px" onclick="refreshPropertiesPanel()" title="Refresh properties">↻</button>
+    </div>
     <div class="scroll" id="props-scroll">
       <div id="prim-info" style="padding:8px;font-size:11px;color:var(--text2)">
         Select a prim to inspect
       </div>
       <table id="attr-table"><tbody id="attr-body"></tbody></table>
     </div>
+  </div>
+
+  <!-- ── Curve editor panel (separate from Properties) ─────────────────── -->
+  <div id="curve-editor">
+    <div class="panel-header">
+      <span>Curve Editor</span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button style="padding:1px 6px;font-size:10px" onclick="refreshCurvePanel()" title="Refresh curves">↻</button>
+        <button style="padding:1px 6px;font-size:10px" onclick="toggleCurvePanel(false)" title="Hide curve panel">✕</button>
+      </div>
+    </div>
+    <div class="scroll" id="curve-scroll" style="padding:6px 8px"></div>
   </div>
 
   <!-- ── Status bar ─────────────────────────────────────────────────────── -->
@@ -1569,6 +1600,40 @@ function showContextMenu(x, y, path) {
 function closeContextMenu() { var m = document.getElementById('ctx-menu-active'); if (m) m.remove();
   var dd = document.getElementById('create-dropdown'); if (dd) dd.classList.remove('open'); }
 
+// ── Panel toggles ─────────────────────────────────────────────────────────
+window._curvePanelOpen = false;
+
+function toggleCurvePanel(forceState) {
+  var app = document.getElementById('app');
+  var btn = document.getElementById('btn-curve-panel');
+  var open = (typeof forceState === 'boolean') ? forceState : !window._curvePanelOpen;
+
+  window._curvePanelOpen = open;
+  if (app) app.classList.toggle('curve-open', open);
+  if (btn) btn.classList.toggle('primary', open);
+
+  if (open && _selectedPaths.length > 0) {
+    var path = _selectedPaths[_selectedPaths.length - 1];
+    if (path) loadCurvePanel(path, Number(window._currentTimeCode));
+  }
+}
+
+function refreshCurvePanel() {
+  if (!window._curvePanelOpen || !_selectedPaths.length) return;
+  var path = _selectedPaths[_selectedPaths.length - 1];
+  if (path) loadCurvePanel(path, Number(window._currentTimeCode));
+}
+
+function refreshPropertiesPanel() {
+  if (!_selectedPaths.length) return;
+  var path = _selectedPaths[_selectedPaths.length - 1];
+  if (path) selectPrimByPath(path, { skipGizmo: true, skipRowSync: true });
+}
+
+window.toggleCurvePanel = toggleCurvePanel;
+window.refreshCurvePanel = refreshCurvePanel;
+window.refreshPropertiesPanel = refreshPropertiesPanel;
+
 // ── DCC commands ──────────────────────────────────────────────────────────
 async function createPrim(type, parent) { closeContextMenu();
   var result = await api('/api/prims/create', 'POST', { type: type, parent: parent || '/World' });
@@ -1694,11 +1759,12 @@ async function selectPrimByPath(path, opts) {
     var catAttrs = categories[catName];
     if (!catAttrs || !catAttrs.length) return;
     var sec = document.createElement('div'); sec.className = 'attr-section';
+    var collapsedByDefault = (catName === 'Geometry' || catName === 'Other');
     var hdr = document.createElement('div'); hdr.className = 'attr-section-header';
-    hdr.innerHTML = '<span class="toggle">\u25be</span> ' + catName + ' <span style="color:var(--text2);font-size:10px;margin-left:auto">' + catAttrs.length + '</span>';
+    hdr.innerHTML = '<span class="toggle">' + (collapsedByDefault ? '\u25b8' : '\u25be') + '</span> ' + catName + ' <span style="color:var(--text2);font-size:10px;margin-left:auto">' + catAttrs.length + '</span>';
     hdr.addEventListener('click', function() { var b = sec.querySelector('.attr-section-body');
       b.classList.toggle('collapsed'); hdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '\u25b8' : '\u25be'; });
-    var body = document.createElement('div'); body.className = 'attr-section-body';
+    var body = document.createElement('div'); body.className = 'attr-section-body' + (collapsedByDefault ? ' collapsed' : '');
     var tbl = document.createElement('table'); tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
     catAttrs.forEach(function(attr) {
       var tr = document.createElement('tr');
@@ -1713,7 +1779,7 @@ async function selectPrimByPath(path, opts) {
 
   // Load extra panels if available
   if (!opts.skipMaterial) loadMaterialPanel(path, tc);
-  if (!opts.skipCurve) loadCurvePanel(path, tc);
+  if (!opts.skipCurve && window._curvePanelOpen) loadCurvePanel(path, tc);
 }
 window.selectPrimByPath = selectPrimByPath;
 
@@ -1832,11 +1898,13 @@ function _curveToNumber(v) {
 }
 
 function _ensureCurveSection() {
+  var host = document.getElementById('curve-scroll');
+  if (!host) return null;
   var sec = document.getElementById('curve-section');
   if (!sec) {
     sec = document.createElement('div');
     sec.id = 'curve-section';
-    document.getElementById('props-scroll').appendChild(sec);
+    host.appendChild(sec);
   }
   return sec;
 }
@@ -1908,6 +1976,7 @@ function _renderCurveFromState(timeCode) {
 
 async function loadCurvePanel(primPath, timeCode) {
   var curveSection = _ensureCurveSection();
+  if (!curveSection) return;
   curveSection.innerHTML = '<div class="attr-section"><div class="attr-section-header"><span class="toggle">▾</span> Curve Editor <span style="color:var(--text2);font-size:10px;margin-left:auto">loading…</span></div></div>';
 
   var key = primPath.replace(/^\//, '');
@@ -2205,7 +2274,7 @@ window._onTimeCodeChanged = function(tc, playing) {
   if (Number.isFinite(Number(tc))) {
     window._currentTimeCode = Number(tc);
     _curveState.currentTime = Number(tc);
-    _renderCurveFromState(_curveState.currentTime);
+    if (window._curvePanelOpen) _renderCurveFromState(_curveState.currentTime);
   }
   _refreshSelectedPrimAtTimelineTime(!playing);
 };
