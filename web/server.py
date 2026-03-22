@@ -1897,7 +1897,34 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
         "shaderIds": [],
         "editablePreviewSurface": False,
         "binding": binding_info,
+        "terminals": [],
+        "readOnlyNodes": [],
     }
+
+    # Terminals (including render-context outputs like surface@mtlx)
+    for mout in _node_iter_material_outputs(mat):
+        item = {
+            "name": str(mout.get("uiName") or mout.get("terminal") or "surface"),
+            "terminal": str(mout.get("terminal") or "surface"),
+            "context": str(mout.get("context") or ""),
+            "sourceNode": None,
+            "sourceOutput": None,
+        }
+        out = mout.get("output")
+        if out:
+            try:
+                src = out.GetConnectedSource()
+            except Exception:
+                src = None
+            if src:
+                try:
+                    src_api, src_name, _st = src
+                    src_prim = src_api.GetPrim()
+                    item["sourceNode"] = str(src_prim.GetPath())
+                    item["sourceOutput"] = str(src_name)
+                except Exception:
+                    pass
+        result["terminals"].append(item)
 
     preview_shader = None
     shader_ids = []
@@ -1907,10 +1934,62 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
         if not shader:
             continue
         sid = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
-        if sid is not None:
-            shader_ids.append(str(sid))
+        sid_str = str(sid) if sid is not None else None
+        if sid_str is not None:
+            shader_ids.append(sid_str)
         if sid == "UsdPreviewSurface" and preview_shader is None:
             preview_shader = shader
+
+        # Read-only shader graph info (used for MaterialX/vendor accessibility)
+        ro_node = {
+            "path": str(shader_prim.GetPath()),
+            "name": shader_prim.GetName() or str(shader_prim.GetPath()).rsplit("/", 1)[-1],
+            "shaderId": sid_str,
+            "inputs": [],
+            "outputs": [],
+        }
+        try:
+            for out in shader.GetOutputs():
+                ro_node["outputs"].append({
+                    "name": out.GetBaseName(),
+                    "type": str(out.GetTypeName()),
+                })
+        except Exception:
+            pass
+
+        try:
+            tc = Usd.TimeCode(time) if time is not None else None
+            for inp in shader.GetInputs():
+                ent = {
+                    "name": inp.GetBaseName(),
+                    "type": str(inp.GetTypeName()),
+                    "value": None,
+                    "sourceNode": None,
+                    "sourceOutput": None,
+                }
+                try:
+                    v = inp.Get(tc) if tc is not None else inp.Get()
+                    if v is not None:
+                        ent["value"] = str(v)
+                except Exception:
+                    pass
+                try:
+                    src = inp.GetConnectedSource()
+                except Exception:
+                    src = None
+                if src:
+                    try:
+                        src_api, src_name, _st = src
+                        src_prim = src_api.GetPrim()
+                        ent["sourceNode"] = str(src_prim.GetPath())
+                        ent["sourceOutput"] = str(src_name)
+                    except Exception:
+                        pass
+                ro_node["inputs"].append(ent)
+        except Exception:
+            pass
+
+        result["readOnlyNodes"].append(ro_node)
 
     result["shaderIds"] = sorted(set(shader_ids))
 
@@ -2077,29 +2156,132 @@ def _node_apply_shader_ports(shader, shader_id: str):
             shader.CreateOutput(name, t)
 
 
+def _node_iter_material_outputs(mat):
+    """Yield material terminal outputs with context-aware UI names.
+
+    uiName examples: surface, displacement, volume, surface@mtlx
+    """
+    out_items = []
+    seen = set()
+
+    # Generic outputs include render-context terminals (e.g. outputs:mtlx:surface)
+    try:
+        all_outs = list(mat.GetOutputs())
+    except Exception:
+        all_outs = []
+
+    for out in all_outs:
+        try:
+            attr = out.GetAttr()
+            attr_name = str(attr.GetName()) if attr else ""
+            parts = attr_name.split(":") if attr_name else []
+
+            terminal = out.GetBaseName() if out else ""
+            context = ""
+            if len(parts) >= 3 and parts[0] == "outputs":
+                context = ":".join(parts[1:-1]).strip()
+                terminal = parts[-1].strip() or terminal
+            elif len(parts) == 2 and parts[0] == "outputs":
+                terminal = parts[1].strip() or terminal
+
+            if not terminal:
+                continue
+
+            ui_name = terminal if not context else f"{terminal}@{context}"
+            key = (ui_name, str(out.GetPath()))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            out_items.append({
+                "uiName": ui_name,
+                "terminal": terminal,
+                "context": context,
+                "output": out,
+            })
+        except Exception:
+            continue
+
+    # Ensure classic terminals exist in list (for PreviewSurface workflows)
+    for terminal, fn_name in (("surface", "GetSurfaceOutput"), ("displacement", "GetDisplacementOutput"), ("volume", "GetVolumeOutput")):
+        try:
+            fn = getattr(mat, fn_name, None)
+            out = fn() if callable(fn) else None
+        except Exception:
+            out = None
+        if not out:
+            continue
+        ui_name = terminal
+        key = (ui_name, str(out.GetPath()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out_items.append({
+            "uiName": ui_name,
+            "terminal": terminal,
+            "context": "",
+            "output": out,
+        })
+
+    return out_items
+
+
 def _node_material_output(mat, output_name: str, create: bool = False):
-    out_name = str(output_name or "surface").strip().lower()
+    from pxr import UsdShade
+
+    raw = str(output_name or "surface").strip()
+    out_name = raw.lower()
+
+    # Match existing outputs first (including render-context terminals)
+    for item in _node_iter_material_outputs(mat):
+        if item["uiName"].lower() == out_name or item["terminal"].lower() == out_name:
+            return item["output"], item["uiName"]
+
+    # Parse requested context form: terminal@context
+    terminal = out_name
+    context = ""
+    if "@" in out_name:
+        terminal, context = out_name.split("@", 1)
+        terminal = terminal.strip() or "surface"
+        context = context.strip()
+
+    # Create classic terminal outputs when requested
     fn = {
-        "surface": ("GetSurfaceOutput", "CreateSurfaceOutput"),
-        "displacement": ("GetDisplacementOutput", "CreateDisplacementOutput"),
-        "volume": ("GetVolumeOutput", "CreateVolumeOutput"),
-    }.get(out_name, ("GetSurfaceOutput", "CreateSurfaceOutput"))
+        "surface": ("CreateSurfaceOutput", "GetSurfaceOutput"),
+        "displacement": ("CreateDisplacementOutput", "GetDisplacementOutput"),
+        "volume": ("CreateVolumeOutput", "GetVolumeOutput"),
+    }.get(terminal, ("CreateSurfaceOutput", "GetSurfaceOutput"))
 
-    getter = getattr(mat, fn[0], None)
-    creator = getattr(mat, fn[1], None)
+    if create:
+        creator = getattr(mat, fn[0], None)
+        if callable(creator):
+            try:
+                # Render-context overload when supported (e.g. "mtlx")
+                if context:
+                    try:
+                        tok = _usdshade_token(UsdShade.Tokens, context)
+                        out = creator(tok)
+                    except Exception:
+                        out = creator(context)
+                    if out:
+                        return out, f"{terminal}@{context}"
+                else:
+                    out = creator()
+                    if out:
+                        return out, terminal
+            except Exception:
+                pass
 
-    out = None
+    getter = getattr(mat, fn[1], None)
     if callable(getter):
         try:
             out = getter()
+            if out:
+                return out, terminal
         except Exception:
-            out = None
-    if (not out) and create and callable(creator):
-        try:
-            out = creator()
-        except Exception:
-            out = None
-    return out, (out_name if out_name in {"surface", "displacement", "volume"} else "surface")
+            pass
+
+    return None, (f"{terminal}@{context}" if context else terminal)
 
 
 def _node_connect_input(inp, source_shader, source_output_name: str):
@@ -2301,19 +2483,18 @@ async def node_graph(prim_path: str):
     nodes.append(material_node)
     nodes_by_id[mat_path] = material_node
 
-    for label, fn_name in (("surface", "GetSurfaceOutput"), ("displacement", "GetDisplacementOutput"), ("volume", "GetVolumeOutput")):
-        out = None
-        fn = getattr(mat, fn_name, None)
-        if callable(fn):
-            try:
-                out = fn()
-            except Exception:
-                out = None
-
+    for mout in _node_iter_material_outputs(mat):
+        label = str(mout.get("uiName") or mout.get("terminal") or "surface")
+        out = mout.get("output")
         if not out:
             continue
 
-        material_node["outputs"].append({"name": label, "type": "output"})
+        material_node["outputs"].append({
+            "name": label,
+            "type": "output",
+            "terminal": mout.get("terminal") or label,
+            "context": mout.get("context") or "",
+        })
 
         try:
             src = out.GetConnectedSource()

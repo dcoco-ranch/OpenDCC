@@ -3017,14 +3017,113 @@ async function loadMaterialPanel(primPath, timeCode) {
   if (!mat.editablePreviewSurface) {
     var ro = document.createElement('div');
     ro.style.cssText = 'padding:8px;color:var(--text2);font-size:11px';
-    ro.textContent = 'No UsdPreviewSurface found on this material. Use a dedicated MaterialX/vendor editor (planned) or bind a PreviewSurface material for quick edits.';
+    ro.textContent = 'No UsdPreviewSurface found on this material. MaterialX/vendor graph is available below in read-only mode.';
     body.appendChild(ro);
+
+    var terminals = Array.isArray(mat.terminals) ? mat.terminals : [];
+    if (terminals.length) {
+      var termTitle = document.createElement('div');
+      termTitle.style.cssText = 'padding:6px 8px 2px 8px;color:var(--text);font-size:11px;font-weight:600';
+      termTitle.textContent = 'Material terminals';
+      body.appendChild(termTitle);
+
+      var termTbl = document.createElement('table');
+      termTbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:10px';
+      terminals.forEach(function(t) {
+        var tr = document.createElement('tr');
+        var td1 = document.createElement('td');
+        td1.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a;color:var(--text2);width:34%';
+        td1.textContent = t.name || (t.terminal || 'surface');
+        var td2 = document.createElement('td');
+        td2.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a';
+        if (t.sourceNode) {
+          td2.textContent = String(t.sourceNode).split('/').pop() + '.' + (t.sourceOutput || '?');
+        } else {
+          td2.style.color = 'var(--text2)';
+          td2.textContent = '(not connected)';
+        }
+        tr.append(td1, td2);
+        termTbl.appendChild(tr);
+      });
+      body.appendChild(termTbl);
+    }
+
+    var roNodes = Array.isArray(mat.readOnlyNodes) ? mat.readOnlyNodes : [];
+    if (roNodes.length) {
+      var roSec = document.createElement('div');
+      roSec.className = 'attr-section';
+      roSec.style.margin = '8px';
+
+      var roHdr = document.createElement('div');
+      roHdr.className = 'attr-section-header';
+      roHdr.innerHTML = '<span class="toggle">▾</span> Shader graph (read-only)'
+        + '<span style="color:var(--text2);font-size:10px;margin-left:auto">' + roNodes.length + ' node(s)</span>';
+      roHdr.addEventListener('click', function() {
+        var b = roSec.querySelector('.attr-section-body');
+        b.classList.toggle('collapsed');
+        roHdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '▸' : '▾';
+      });
+
+      var roBody = document.createElement('div');
+      roBody.className = 'attr-section-body';
+      roBody.style.padding = '0';
+
+      roNodes.forEach(function(n) {
+        var nbox = document.createElement('div');
+        nbox.style.cssText = 'padding:6px 8px;border-bottom:1px solid #323232';
+
+        var head = document.createElement('div');
+        head.style.cssText = 'color:var(--text);font-size:11px;font-weight:600';
+        head.textContent = (n.name || n.path || 'Shader') + '  [' + (n.shaderId || 'unknown') + ']';
+        nbox.appendChild(head);
+
+        var inputs = Array.isArray(n.inputs) ? n.inputs : [];
+        if (!inputs.length) {
+          var em = document.createElement('div');
+          em.style.cssText = 'color:var(--text2);font-size:10px;padding-top:2px';
+          em.textContent = 'No inputs';
+          nbox.appendChild(em);
+        } else {
+          inputs.forEach(function(inp) {
+            var line = document.createElement('div');
+            line.style.cssText = 'display:grid;grid-template-columns:130px 1fr;gap:6px;color:var(--text2);font-size:10px;padding-top:2px';
+            var l = document.createElement('div');
+            l.textContent = inp.name + ' : ' + (inp.type || '*');
+            var r = document.createElement('div');
+            if (inp.sourceNode) r.textContent = '← ' + String(inp.sourceNode).split('/').pop() + '.' + (inp.sourceOutput || '?');
+            else r.textContent = (inp.value == null || inp.value === '') ? '—' : String(inp.value);
+            line.append(l, r);
+            nbox.appendChild(line);
+          });
+        }
+
+        roBody.appendChild(nbox);
+      });
+
+      roSec.appendChild(roHdr);
+      roSec.appendChild(roBody);
+      body.appendChild(roSec);
+    }
+
+    var actionRow = document.createElement('div');
+    actionRow.style.cssText = 'display:flex;gap:6px;padding:8px';
+
+    var openNodeBtn = document.createElement('button');
+    openNodeBtn.textContent = 'Open Node Workbench';
+    openNodeBtn.style.cssText = 'padding:2px 8px;font-size:11px';
+    openNodeBtn.addEventListener('click', function() {
+      if (typeof toggleNodeWorkbench === 'function') toggleNodeWorkbench(true);
+      loadNodePanel(primPath, { forceRender: true });
+    });
 
     var bindBtn = document.createElement('button');
     bindBtn.textContent = '+ Create & Bind PreviewSurface';
-    bindBtn.style.cssText = 'margin:0 8px 8px 8px;padding:2px 8px;font-size:11px';
+    bindBtn.style.cssText = 'padding:2px 8px;font-size:11px';
     bindBtn.addEventListener('click', function() { bindDefaultMaterial(primPath); });
-    body.appendChild(bindBtn);
+
+    actionRow.appendChild(openNodeBtn);
+    actionRow.appendChild(bindBtn);
+    body.appendChild(actionRow);
 
     sec.appendChild(hdr);
     sec.appendChild(body);
@@ -3794,12 +3893,18 @@ function _nodeSetToolbarEnabled(enabled) {
   var delBtn = document.getElementById('node-del-btn');
   var gbtn = document.getElementById('node-grid-btn');
   var sbtn = document.getElementById('node-snap-btn');
+  var zOut = document.getElementById('node-zoom-out-btn');
+  var zIn = document.getElementById('node-zoom-in-btn');
+  var fit = document.getElementById('node-fit-btn');
   if (sel) sel.disabled = !enabled;
   if (name) name.disabled = !enabled;
   if (addBtn) addBtn.disabled = !enabled;
   if (delBtn) delBtn.disabled = !enabled;
   if (gbtn) gbtn.disabled = !enabled;
   if (sbtn) sbtn.disabled = !enabled;
+  if (zOut) zOut.disabled = !enabled;
+  if (zIn) zIn.disabled = !enabled;
+  if (fit) fit.disabled = !enabled;
 }
 
 function _nodePopulateLibrary(items) {
@@ -3847,6 +3952,9 @@ function _nodeEnsureWorkbenchLayout(host) {
     + '<button id="node-del-btn" style="padding:1px 6px;font-size:10px">🗑 Delete selected</button>'
     + '<button id="node-grid-btn" style="padding:1px 6px;font-size:10px">Grid</button>'
     + '<button id="node-snap-btn" style="padding:1px 6px;font-size:10px">Snap</button>'
+    + '<button id="node-zoom-out-btn" title="Zoom out" style="padding:1px 6px;font-size:10px">−</button>'
+    + '<button id="node-zoom-in-btn" title="Zoom in" style="padding:1px 6px;font-size:10px">＋</button>'
+    + '<button id="node-fit-btn" title="Fit graph" style="padding:1px 6px;font-size:10px">Fit</button>'
     + '<span style="flex:1"></span>'
     + '<span id="node-legend" style="color:var(--text2);font-size:10px">Drag output→input to connect • Right-click canvas to add node</span>';
 
@@ -3915,7 +4023,39 @@ function _nodeEnsureWorkbenchLayout(host) {
   var snapBtn = toolbar.querySelector('#node-snap-btn');
   if (snapBtn) snapBtn.addEventListener('click', function() {
     _nodeGraphUi.snapToGrid = !_nodeGraphUi.snapToGrid;
+    if (_nodeGraphUi.canvas) _nodeGraphUi.canvas.align_to_grid = !!_nodeGraphUi.snapToGrid;
     _nodeSyncGridUi();
+  });
+
+  var zoomOutBtn = toolbar.querySelector('#node-zoom-out-btn');
+  if (zoomOutBtn) zoomOutBtn.addEventListener('click', function() {
+    var c = _nodeGraphUi.canvas;
+    if (!c || !c.ds) return;
+    c.ds.scale = Math.max(0.35, Number(c.ds.scale || 1) * 0.9);
+    _nodeUpdateGridTransform();
+    c.setDirty(true, true);
+  });
+
+  var zoomInBtn = toolbar.querySelector('#node-zoom-in-btn');
+  if (zoomInBtn) zoomInBtn.addEventListener('click', function() {
+    var c = _nodeGraphUi.canvas;
+    if (!c || !c.ds) return;
+    c.ds.scale = Math.min(2.2, Number(c.ds.scale || 1) * 1.1);
+    _nodeUpdateGridTransform();
+    c.setDirty(true, true);
+  });
+
+  var fitBtn = toolbar.querySelector('#node-fit-btn');
+  if (fitBtn) fitBtn.addEventListener('click', function() {
+    var c = _nodeGraphUi.canvas;
+    if (!c) return;
+    try {
+      if (c.resetZoom) c.resetZoom();
+      if (c.centerOnNode && _nodeGetSelectedLiteNode()) c.centerOnNode(_nodeGetSelectedLiteNode());
+      if (c.ds) c.ds.scale = Math.max(0.45, Math.min(1.25, Number(c.ds.scale || 1)));
+    } catch (_) {}
+    _nodeUpdateGridTransform();
+    c.setDirty(true, true);
   });
 
   _nodeSyncGridUi();
@@ -3960,6 +4100,7 @@ function _nodeEnsureWorkbenchLayout(host) {
     graphCanvas.read_only = false;
     graphCanvas.allow_dragnodes = true;
     graphCanvas.allow_dragcanvas = true;
+    graphCanvas.align_to_grid = !!_nodeGraphUi.snapToGrid;
     graphCanvas.always_render_background = true;
     graphCanvas.onRenderBackground = function() {
       _nodeUpdateGridTransform();
@@ -4050,7 +4191,7 @@ function _nodeEnsureWorkbenchLayout(host) {
       _scheduleNodePanelRefresh();
     };
 
-    graph.onNodeMoved = function(node) {
+    graphCanvas.onNodeMoved = function(node) {
       if (!node || !node.__nodePath || !Array.isArray(node.pos)) return;
       if (_nodeGraphUi.snapToGrid) {
         var gs = Number(_nodeGraphUi.gridSize || 24);

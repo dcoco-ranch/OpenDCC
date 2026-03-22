@@ -30,6 +30,8 @@ Branch: `develop`
     - anti-flicker fix: timeline attr refresh no longer reloads node workbench every frame when paused
     - connect stability hardening: robust source-slot resolution in LiteGraph callback
     - node workbench grid overlay + optional snap-to-grid toggle
+    - snap fix: bound to LiteGraph canvas move callback + align_to_grid
+    - MaterialX accessibility pass: material terminals (including context outputs) + read-only shader graph inputs in Material panel
   - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
     - `GET /api/node_graph/library`
     - `POST /api/node_graph/create_node`

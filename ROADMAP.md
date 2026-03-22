@@ -118,6 +118,7 @@
 - [x] Édition des valeurs d’inputs shader (constantes) depuis le workbench
 - [x] Menu contextuel clic droit (filtrable) pour ajout rapide de nodes
 - [x] Grille visuelle + option snap-to-grid dans le workbench node
+- [x] Accessibilité MaterialX read-only (terminals + graph inputs) dans Material panel
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)
 - [x] Syntax highlighting Python (CodeMirror, fallback textarea si CDN indisponible)
