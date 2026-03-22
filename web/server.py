@@ -647,16 +647,38 @@ def _coerce_value(attr, raw_value: Any):
     try:
         from pxr import Gf, Vt
         type_name = str(attr.GetTypeName())
+        t = type_name.lower()
+
         if isinstance(raw_value, list):
-            if "Vec3"   in type_name: return Gf.Vec3f(*[float(x) for x in raw_value[:3]])
-            if "Vec2"   in type_name: return Gf.Vec2f(*[float(x) for x in raw_value[:2]])
-            if "Vec4"   in type_name: return Gf.Vec4f(*[float(x) for x in raw_value[:4]])
-            if "float"  in type_name.lower(): return Vt.FloatArray([float(x) for x in raw_value])
-            if "int"    in type_name.lower():  return Vt.IntArray([int(x)   for x in raw_value])
+            if len(raw_value) >= 3:
+                if "double3" in t or "vec3d" in t:
+                    return Gf.Vec3d(*[float(x) for x in raw_value[:3]])
+                if any(k in t for k in ["float3", "vec3f", "vec3", "color3", "normal3", "point3", "vector3"]):
+                    return Gf.Vec3f(*[float(x) for x in raw_value[:3]])
+            if len(raw_value) >= 2:
+                if "double2" in t or "vec2d" in t:
+                    return Gf.Vec2d(*[float(x) for x in raw_value[:2]])
+                if "float2" in t or "vec2" in t:
+                    return Gf.Vec2f(*[float(x) for x in raw_value[:2]])
+            if len(raw_value) >= 4:
+                if "double4" in t or "vec4d" in t:
+                    return Gf.Vec4d(*[float(x) for x in raw_value[:4]])
+                if "float4" in t or "vec4" in t:
+                    return Gf.Vec4f(*[float(x) for x in raw_value[:4]])
+
+            if "float" in t:
+                return Vt.FloatArray([float(x) for x in raw_value])
+            if "int" in t:
+                return Vt.IntArray([int(x) for x in raw_value])
+
         if isinstance(raw_value, (int, float)):
-            if "float"  in type_name.lower() or "double" in type_name.lower(): return float(raw_value)
-            if "int"    in type_name.lower():  return int(raw_value)
-            if "bool"   in type_name.lower():  return bool(raw_value)
+            if "float" in t or "double" in t:
+                return float(raw_value)
+            if "int" in t:
+                return int(raw_value)
+            if "bool" in t:
+                return bool(raw_value)
+
         return raw_value
     except Exception as exc:
         logger.debug("coerce_value failed: %s", exc)
@@ -1510,9 +1532,14 @@ async def prim_move_keyframe(prim_path: str, req: _KeyframeMoveReq):
         to_tc = Usd.TimeCode(float(req.to_time))
 
         try:
+            authored_times = list(attr.GetTimeSamples() or [])
+            if not any(abs(float(t) - float(req.from_time)) < 1e-6 for t in authored_times):
+                raise HTTPException(status_code=404, detail=f"No authored keyframe at time {req.from_time}")
+
             value = attr.Get(from_tc)
             if value is None:
-                raise HTTPException(status_code=404, detail=f"No keyframe at time {req.from_time}")
+                raise HTTPException(status_code=404, detail=f"No keyframe value at time {req.from_time}")
+
             attr.Set(value, to_tc)
             attr.ClearAtTime(from_tc)
         except HTTPException:
