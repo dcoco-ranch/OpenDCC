@@ -4,12 +4,12 @@ Date: 2026-03-22
 Branch: `develop`
 
 ## Latest commits (newest first)
+- `05a7738` feat(usd-layering): author pxr edits in sidecar layer and scope material preview
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 - `20ade4a` docs(handoff): include material bind+texture milestone commit
 - `77f1186` docs(handoff): add material editor milestone to latest commits
 - `8f7e8bc` feat(material-editor): add dedicated inspector tab with UsdPreviewSurface controls
 - `b455984` docs(handoff): refresh latest commit list after script editor upgrade
-- `6d4f953` feat(script-editor): add CodeMirror python highlighting and autocomplete
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
