@@ -19,6 +19,10 @@ Branch: `develop`
 - Resizable layout splitters + persisted panel sizes.
 - Viewport panel presets: 1V / 2V / 3V / 4V (multi-camera scissor render).
 - Script Editor upgraded with CodeMirror Python highlighting + basic autocomplete + fallback textarea mode.
+- Material Editor tab in inspector (dedicated panel) with:
+  - bound material (`UsdShade`) inspection
+  - editable UsdPreviewSurface params (color, metallic, roughness, opacity, etc.)
+  - immediate viewport preview updates on edit
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key
@@ -35,12 +39,15 @@ Branch: `develop`
 - Status bar timeline at bottom
 
 ## Pending work (high priority)
-1. Viewport panel presets (1/2/3/4) interaction polish
-   - currently render/picking works in all panels
+1. Node Editor web MVP (Phase 4.3)
+   - graph canvas and minimal UsdShade graph visualization
+2. UV Editor web MVP (Phase 4.2)
+   - basic UV display and transform tools
+3. Viewport panel presets (1/2/3/4) interaction polish
+   - render/picking works in all panels
    - orbit/transform control still driven by main perspective camera
-2. Roadmap cleanup (Phase 3/4 items are stale and partially already done)
-3. Production hardening:
-   - tests for new keyframe/interp endpoints
+4. Production hardening:
+   - tests for keyframe/interp/material endpoints
    - UX polish for curve editor interactions.
 
 ## VM deployment notes

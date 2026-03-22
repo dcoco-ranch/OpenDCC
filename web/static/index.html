@@ -266,6 +266,21 @@
       -webkit-appearance: none; width: 10px; height: 10px;
       background: var(--accent); border-radius: 50%; cursor: pointer;
     }
+    .mat-control {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .mat-control input[type="color"] {
+      width: 20px; height: 18px; border: 1px solid var(--border); padding: 0; background: transparent;
+    }
+    .mat-control input[type="number"] {
+      width: 58px; background: var(--bg3); color: var(--text);
+      border: 1px solid var(--border); border-radius: 3px; font-size: 10px; padding: 1px 3px;
+    }
+    .mat-tag {
+      display: inline-block; font-size: 10px; color: var(--text2);
+      padding: 0 4px; border: 1px solid var(--border); border-radius: 3px;
+      margin-left: 4px;
+    }
 
     /* Create menu dropdown */
     .create-dropdown {
@@ -385,6 +400,7 @@
     <button onclick="saveStage()">Save</button>
     <button onclick="downloadUSDA()" title="Download USDA">⬇ USDA</button>
     <button onclick="downloadGLB()" title="Download GLB">⬇ GLB</button>
+    <button id="btn-material-panel" onclick="setInspectorTab('material')" title="Open Material Editor">Material Editor</button>
     <button id="btn-curve-panel" onclick="toggleCurvePanel()" title="Toggle Curve Editor panel">Curve Editor</button>
     <button onclick="toggleScript()">Script Editor</button>
   </div>
@@ -483,17 +499,26 @@
 
   <div id="splitter-right" class="panel-splitter vertical" title="Resize properties width"></div>
 
-  <!-- ── Properties ─────────────────────────────────────────────────────── -->
+  <!-- ── Inspector (Properties + Material Editor) ─────────────────────── -->
   <div id="properties">
     <div class="panel-header">
-      <span>Properties</span>
-      <button style="padding:1px 6px;font-size:10px" onclick="refreshPropertiesPanel()" title="Refresh properties">↻</button>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button id="inspector-tab-properties" class="primary" style="padding:1px 6px;font-size:10px" onclick="setInspectorTab('properties')">Properties</button>
+        <button id="inspector-tab-material" style="padding:1px 6px;font-size:10px" onclick="setInspectorTab('material')">Material</button>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button id="btn-refresh-properties" style="padding:1px 6px;font-size:10px" onclick="refreshPropertiesPanel()" title="Refresh properties">↻</button>
+        <button id="btn-refresh-material" style="padding:1px 6px;font-size:10px;display:none" onclick="refreshMaterialPanel()" title="Refresh material editor">↻</button>
+      </div>
     </div>
     <div class="scroll" id="props-scroll">
       <div id="prim-info" style="padding:8px;font-size:11px;color:var(--text2)">
         Select a prim to inspect
       </div>
       <table id="attr-table"><tbody id="attr-body"></tbody></table>
+    </div>
+    <div class="scroll" id="material-scroll" style="display:none;padding:6px 8px">
+      <div style="padding:8px;font-size:11px;color:var(--text2)">Select a prim to inspect material</div>
     </div>
   </div>
 
@@ -1962,15 +1987,50 @@ function refreshCurvePanel() {
   if (path) loadCurvePanel(path, Number(window._currentTimeCode));
 }
 
+let _inspectorTab = 'properties';
+
+function setInspectorTab(tab) {
+  _inspectorTab = (tab === 'material') ? 'material' : 'properties';
+
+  var propsBtn = document.getElementById('inspector-tab-properties');
+  var matBtn = document.getElementById('inspector-tab-material');
+  var propsScroll = document.getElementById('props-scroll');
+  var matScroll = document.getElementById('material-scroll');
+  var refProps = document.getElementById('btn-refresh-properties');
+  var refMat = document.getElementById('btn-refresh-material');
+  var headMat = document.getElementById('btn-material-panel');
+
+  if (propsBtn) propsBtn.classList.toggle('primary', _inspectorTab === 'properties');
+  if (matBtn) matBtn.classList.toggle('primary', _inspectorTab === 'material');
+  if (propsScroll) propsScroll.style.display = (_inspectorTab === 'properties') ? 'block' : 'none';
+  if (matScroll) matScroll.style.display = (_inspectorTab === 'material') ? 'block' : 'none';
+  if (refProps) refProps.style.display = (_inspectorTab === 'properties') ? '' : 'none';
+  if (refMat) refMat.style.display = (_inspectorTab === 'material') ? '' : 'none';
+  if (headMat) headMat.classList.toggle('primary', _inspectorTab === 'material');
+
+  if (_inspectorTab === 'material' && _selectedPaths.length) {
+    var path = _selectedPaths[_selectedPaths.length - 1];
+    if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+  }
+}
+
 function refreshPropertiesPanel() {
   if (!_selectedPaths.length) return;
   var path = _selectedPaths[_selectedPaths.length - 1];
   if (path) selectPrimByPath(path, { skipGizmo: true, skipRowSync: true });
 }
 
+function refreshMaterialPanel() {
+  if (!_selectedPaths.length) return;
+  var path = _selectedPaths[_selectedPaths.length - 1];
+  if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+}
+
 window.toggleCurvePanel = toggleCurvePanel;
 window.refreshCurvePanel = refreshCurvePanel;
 window.refreshPropertiesPanel = refreshPropertiesPanel;
+window.refreshMaterialPanel = refreshMaterialPanel;
+window.setInspectorTab = setInspectorTab;
 
 // ── DCC commands ──────────────────────────────────────────────────────────
 async function createPrim(type, parent) { closeContextMenu();
@@ -2121,35 +2181,142 @@ async function selectPrimByPath(path, opts) {
 }
 window.selectPrimByPath = selectPrimByPath;
 
-// Set a UsdPreviewSurface parameter
-async function setMaterialParam(materialPath, paramName, value) {
-  var key = materialPath.replace(/^\//, '');
-  await api('/api/material/' + key + '/set', 'POST', { param: paramName, value: value });
+function _materialToNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  var s = String(v == null ? '' : v);
+  var m = s.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/);
+  return m ? Number(m[0]) : NaN;
 }
 
-// ── Material panel (loads UsdPreviewSurface params for selected prim) ─────
-async function loadMaterialPanel(primPath, timeCode) {
-  var matSection = document.getElementById('material-section');
-  if (!matSection) {
-    matSection = document.createElement('div');
-    matSection.id = 'material-section';
-    document.getElementById('props-scroll').appendChild(matSection);
+function _materialToVec3(v) {
+  if (Array.isArray(v) && v.length >= 3) {
+    return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
   }
-  matSection.innerHTML = '';
+  var s = String(v == null ? '' : v).replace(/[()\[\]]/g, ' ');
+  var nums = s.split(/[,\s]+/).map(Number).filter(Number.isFinite);
+  if (nums.length >= 3) return [nums[0], nums[1], nums[2]];
+  return null;
+}
+
+function _vec3ToHex(vec) {
+  var c = vec || [0, 0, 0];
+  function ch(v) {
+    var n = Math.max(0, Math.min(255, Math.round((Number(v) || 0) * 255)));
+    var h = n.toString(16);
+    return h.length < 2 ? '0' + h : h;
+  }
+  return '#' + ch(c[0]) + ch(c[1]) + ch(c[2]);
+}
+
+function _hexToVec3(hex) {
+  var m = String(hex || '').trim().match(/^#?([0-9a-fA-F]{6})$/);
+  if (!m) return null;
+  var x = m[1];
+  return [
+    parseInt(x.slice(0, 2), 16) / 255,
+    parseInt(x.slice(2, 4), 16) / 255,
+    parseInt(x.slice(4, 6), 16) / 255,
+  ];
+}
+
+function _formatVec3(vec) {
+  if (!vec || vec.length < 3) return '(0, 0, 0)';
+  return '(' + vec.map(function(v) { return (Number(v) || 0).toFixed(3); }).join(', ') + ')';
+}
+
+function _foreachPreviewMaterial(fn) {
+  var target = (window._gizmo && window._gizmo.object) ? window._gizmo.object : window._usdRoot;
+  if (!target) return;
+  target.traverse(function(obj) {
+    if (!obj.isMesh || !obj.material) return;
+    var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach(fn);
+  });
+}
+
+function _applyMaterialPreview(paramName, value) {
+  var n = String(paramName || '').toLowerCase();
+  _foreachPreviewMaterial(function(mat) {
+    try {
+      if ((n.indexOf('diffusecolor') >= 0 || n.indexOf('basecolor') >= 0) && mat.color) {
+        var c = _materialToVec3(value);
+        if (c) mat.color.setRGB(c[0], c[1], c[2]);
+      } else if (n.indexOf('emissive') >= 0 && mat.emissive) {
+        var e = _materialToVec3(value);
+        if (e) mat.emissive.setRGB(e[0], e[1], e[2]);
+      } else if (n.indexOf('metallic') >= 0 && 'metalness' in mat) {
+        var m = _materialToNum(value);
+        if (Number.isFinite(m)) mat.metalness = m;
+      } else if (n.indexOf('roughness') >= 0 && 'roughness' in mat) {
+        var r = _materialToNum(value);
+        if (Number.isFinite(r)) mat.roughness = r;
+      } else if (n.indexOf('opacity') >= 0 && 'opacity' in mat) {
+        var o = _materialToNum(value);
+        if (Number.isFinite(o)) {
+          mat.opacity = o;
+          mat.transparent = o < 0.999;
+          mat.depthWrite = !mat.transparent;
+        }
+      }
+      mat.needsUpdate = true;
+    } catch (_) {}
+  });
+}
+
+// Set a UsdPreviewSurface parameter
+async function setMaterialParam(materialPath, paramName, value, opts) {
+  opts = opts || {};
+  var key = materialPath.replace(/^\//, '');
+  var res = await api('/api/material/' + key + '/set', 'POST', { param: paramName, value: value });
+  if (!res || !res.ok) return false;
+
+  _applyMaterialPreview(paramName, value);
+  setStatus('Material param set: ' + paramName);
+
+  if (!opts.skipPanelRefresh && _inspectorTab === 'material' && _selectedPaths.length) {
+    var path = _selectedPaths[_selectedPaths.length - 1];
+    if (path) loadMaterialPanel(path, Number(window._currentTimeCode));
+  }
+  return true;
+}
+
+// ── Material editor panel (UsdPreviewSurface params) ─────────────────────
+async function loadMaterialPanel(primPath, timeCode) {
+  var host = document.getElementById('material-scroll');
+  if (!host) return;
+  host.innerHTML = '';
+
+  if (!primPath) {
+    host.innerHTML = '<div style="padding:8px;font-size:11px;color:var(--text2)">Select a prim to inspect material</div>';
+    return;
+  }
+
+  var info = document.createElement('div');
+  info.style.cssText = 'padding:2px 2px 8px 2px;color:var(--text2);font-size:10px;line-height:1.5';
+  info.innerHTML = '<div><b style="color:var(--text)">Prim</b> ' + primPath + '</div>';
+  host.appendChild(info);
 
   var key = primPath.replace(/^\//, '');
   var matUrl = '/api/material/' + key;
   if (Number.isFinite(Number(timeCode))) {
     matUrl += '?time=' + encodeURIComponent(Number(timeCode));
   }
+
   var mat = await api(matUrl);
-  if (!mat.bound) return;
+  if (!mat.bound) {
+    var msg = document.createElement('div');
+    msg.style.cssText = 'padding:8px;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:4px';
+    msg.textContent = 'No bound material found on selected prim.';
+    host.appendChild(msg);
+    return;
+  }
 
   var sec = document.createElement('div');
   sec.className = 'attr-section';
   var hdr = document.createElement('div');
   hdr.className = 'attr-section-header';
-  hdr.innerHTML = '<span class="toggle">▾</span> Material <span style="color:var(--accent);font-size:10px;margin-left:auto">' + mat.materialPath + '</span>';
+  hdr.innerHTML = '<span class="toggle">▾</span> Material Editor <span class="mat-tag">UsdPreviewSurface</span>'
+    + '<span style="color:var(--accent);font-size:10px;margin-left:auto">' + mat.materialPath + '</span>';
   hdr.addEventListener('click', function() {
     var b = sec.querySelector('.attr-section-body');
     b.classList.toggle('collapsed');
@@ -2162,46 +2329,136 @@ async function loadMaterialPanel(primPath, timeCode) {
   tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px';
 
   var params = mat.params || {};
-  for (var name in params) {
-    var val = params[name];
+  var names = Object.keys(params).sort();
+  if (!names.length) {
+    var empty = document.createElement('div');
+    empty.style.cssText = 'padding:8px;color:var(--text2);font-size:11px';
+    empty.textContent = 'No UsdPreviewSurface parameters found.';
+    body.appendChild(empty);
+  }
+
+  names.forEach(function(name) {
+    var raw = params[name];
     var tr = document.createElement('tr');
     var td1 = document.createElement('td');
-    td1.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a;color:var(--text2);width:38%';
+    td1.style.cssText = 'padding:4px 8px;border-bottom:1px solid #3a3a3a;color:var(--text2);width:36%';
     td1.textContent = name;
-    var td2 = document.createElement('td');
-    td2.style.cssText = 'padding:3px 8px;border-bottom:1px solid #3a3a3a';
 
-    // Color swatch for color params
-    if (/[Cc]olor/.test(name) && val) {
-      try {
-        var nums = val.replace(/[^0-9.,\-\s]/g, '').split(/[,\s]+/).map(Number);
-        if (nums.length >= 3) {
-          var r = Math.round(nums[0]*255), g = Math.round(nums[1]*255), b = Math.round(nums[2]*255);
-          td2.innerHTML = '<span class="color-swatch" style="background:rgb('+r+','+g+','+b+')"></span>' + val;
-        } else { td2.textContent = val || '—'; }
-      } catch(e) { td2.textContent = val || '—'; }
-    } else if (/roughness|metallic|opacity|ior|clearcoat/.test(name) && val) {
-      var fval = parseFloat(val);
-      if (!isNaN(fval)) {
-        var maxVal = name === 'ior' ? '3' : '1';
-        td2.innerHTML = '<input type="range" class="attr-slider" min="0" max="' + maxVal +
-          '" step="0.01" value="' + fval +
-          '" oninput="this.nextSibling.textContent=parseFloat(this.value).toFixed(2)"' +
-          ' onchange="setMaterialParam(\'' + mat.materialPath + '\',\'' + name + '\',parseFloat(this.value))"' +
-          '> <span>' + fval.toFixed(2) + '</span>';
-      } else { td2.textContent = val || '—'; }
+    var td2 = document.createElement('td');
+    td2.style.cssText = 'padding:4px 8px;border-bottom:1px solid #3a3a3a';
+
+    if (/color/i.test(name)) {
+      var vec = _materialToVec3(raw) || [0.5, 0.5, 0.5];
+      var wrap = document.createElement('div');
+      wrap.className = 'mat-control';
+
+      var color = document.createElement('input');
+      color.type = 'color';
+      color.value = _vec3ToHex(vec);
+
+      var txt = document.createElement('input');
+      txt.type = 'text';
+      txt.style.margin = '0';
+      txt.value = _formatVec3(vec);
+
+      var commitVec = async function(nextVec) {
+        if (!nextVec || nextVec.length < 3) return;
+        vec = [nextVec[0], nextVec[1], nextVec[2]];
+        color.value = _vec3ToHex(vec);
+        txt.value = _formatVec3(vec);
+        await setMaterialParam(mat.materialPath, name, vec, { skipPanelRefresh: true });
+      };
+
+      color.addEventListener('change', function() {
+        var c = _hexToVec3(color.value);
+        if (c) commitVec(c);
+      });
+
+      txt.addEventListener('blur', function() {
+        var c = _materialToVec3(txt.value);
+        if (c) commitVec(c);
+        else txt.value = _formatVec3(vec);
+      });
+      txt.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') txt.blur();
+      });
+
+      wrap.appendChild(color);
+      wrap.appendChild(txt);
+      td2.appendChild(wrap);
+    } else if (/roughness|metallic|opacity|ior|clearcoat/i.test(name)) {
+      var fval = _materialToNum(raw);
+      if (Number.isFinite(fval)) {
+        var maxVal = /ior/i.test(name) ? 3 : 1;
+        var wrap2 = document.createElement('div');
+        wrap2.className = 'mat-control';
+
+        var range = document.createElement('input');
+        range.type = 'range';
+        range.className = 'attr-slider';
+        range.min = '0';
+        range.max = String(maxVal);
+        range.step = '0.01';
+        range.value = String(fval);
+        range.style.flex = '1';
+
+        var num = document.createElement('input');
+        num.type = 'number';
+        num.step = '0.01';
+        num.min = '0';
+        num.max = String(maxVal);
+        num.value = fval.toFixed(2);
+
+        range.addEventListener('input', function() {
+          num.value = String(parseFloat(range.value).toFixed(2));
+        });
+        range.addEventListener('change', function() {
+          setMaterialParam(mat.materialPath, name, parseFloat(range.value), { skipPanelRefresh: true });
+        });
+
+        num.addEventListener('change', function() {
+          var x = parseFloat(num.value);
+          if (!Number.isFinite(x)) return;
+          x = _clamp(x, 0, maxVal);
+          range.value = String(x);
+          num.value = x.toFixed(2);
+          setMaterialParam(mat.materialPath, name, x, { skipPanelRefresh: true });
+        });
+
+        wrap2.appendChild(range);
+        wrap2.appendChild(num);
+        td2.appendChild(wrap2);
+      } else {
+        td2.textContent = raw || '—';
+      }
     } else {
-      td2.textContent = val || '—';
+      var n = _materialToNum(raw);
+      if (Number.isFinite(n)) {
+        var numInput = document.createElement('input');
+        numInput.type = 'number';
+        numInput.step = '0.01';
+        numInput.value = n.toFixed(3);
+        numInput.style.margin = '0';
+        numInput.addEventListener('change', function() {
+          var x = parseFloat(numInput.value);
+          if (Number.isFinite(x)) {
+            setMaterialParam(mat.materialPath, name, x, { skipPanelRefresh: true });
+          }
+        });
+        td2.appendChild(numInput);
+      } else {
+        td2.textContent = (raw == null || raw === '') ? '—' : String(raw);
+      }
     }
 
     tr.append(td1, td2);
     tbl.appendChild(tr);
-  }
+  });
 
   body.appendChild(tbl);
   sec.appendChild(hdr);
   sec.appendChild(body);
-  matSection.appendChild(sec);
+  host.appendChild(sec);
 }
 
 // ── Curve editor (preview) ───────────────────────────────────────────────
@@ -3109,6 +3366,7 @@ window.takeSnapshot = takeSnapshot;
 //   - Stage info + Outliner refresh
 // This block initializes layout + editor + starts WS connection.
 initPanelSplitters();
+setInspectorTab('properties');
 initScriptEditor();
 connectWS();
 </script>

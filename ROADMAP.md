@@ -94,9 +94,9 @@
 **Tag : `milestone/v4.0-dcc-tools`**
 
 ### 4.1 — Material Editor web (remplace `opendcc.usd_editor.material_editor`)
-- [ ] Lecture des `UsdShade` bindings et affichage en panneau dédié
-- [ ] Édition des paramètres `UsdPreviewSurface` (color, metallic, roughness, opacity)
-- [ ] Preview matériau temps réel dans le viewport
+- [x] Lecture des `UsdShade` bindings et affichage en panneau dédié
+- [x] Édition des paramètres `UsdPreviewSurface` (color, metallic, roughness, opacity)
+- [x] Preview matériau temps réel dans le viewport
 
 ### 4.2 — UV Editor web (remplace `opendcc.usd_editor.uv_editor`)
 - [ ] Canvas 2D (Three.js ou Canvas API) affichant les UVs
