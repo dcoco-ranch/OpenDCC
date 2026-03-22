@@ -786,6 +786,47 @@ import '/usd/bindings/emHdBindings.js';
 import { ThreeRenderDelegateInterface }
   from '/usd/hydra/ThreeJsRenderDelegate.js';
 
+// Hydra delegate patch: fallback when MaterialX material id is missing in map
+(function installHydraMaterialFallbackPatch() {
+  if (window.__opendccHydraMatFallbackPatched) return;
+  window.__opendccHydraMatFallbackPatched = true;
+
+  try {
+    var proto = ThreeRenderDelegateInterface && ThreeRenderDelegateInterface.prototype;
+    if (!proto || typeof proto.createRPrim !== 'function') return;
+
+    var _origCreateRPrim = proto.createRPrim;
+    proto.createRPrim = function(typeId, id, instancerId) {
+      var prim = _origCreateRPrim.call(this, typeId, id, instancerId);
+      try {
+        if (!prim || typeof prim.setMaterial !== 'function' || prim.__opendccMatPatched) return prim;
+
+        var _origSetMaterial = prim.setMaterial;
+        prim.setMaterial = function(materialId) {
+          var iface = this._interface || null;
+          var mats = iface && iface.materials ? iface.materials : null;
+
+          if (mats && mats[materialId]) {
+            return _origSetMaterial.call(this, materialId);
+          }
+
+          // Delegate fallback material key observed in HydraMaterial map
+          var fallback = mats && (mats[''] || mats['/__fallback__']);
+          if (fallback && fallback._material && this._mesh) {
+            this._mesh.material = fallback._material;
+            return;
+          }
+
+          return _origSetMaterial.call(this, materialId);
+        };
+
+        prim.__opendccMatPatched = true;
+      } catch (_) {}
+      return prim;
+    };
+  } catch (_) {}
+})();
+
 // ── Viewport container ────────────────────────────────────────────────────
 const vpWrap = document.getElementById('viewport-wrap');
 
