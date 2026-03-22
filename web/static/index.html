@@ -850,6 +850,7 @@ import { ThreeRenderDelegateInterface }
 
   var _mtlxProxyCache = new Map();
   var _proxyTextureLoader = new THREE.TextureLoader();
+  var _proxyAppliedByMaterial = new WeakMap();
 
   function _normalizeMaterialPathId(materialId) {
     var s = String(materialId || '').trim();
@@ -884,12 +885,19 @@ import { ThreeRenderDelegateInterface }
     var matPath = _normalizeMaterialPathId(materialId);
     if (!matPath) return;
 
-    if (material.__opendccProxyAppliedFor === matPath) return;
-    material.__opendccProxyAppliedFor = matPath;
+    var done = _proxyAppliedByMaterial.get(material);
+    if (!done) {
+      done = new Set();
+      _proxyAppliedByMaterial.set(material, done);
+    }
+    if (done.has(matPath)) return;
 
     _fetchMaterialProxyFromServer(matPath).then(function(proxy) {
       if (!proxy || !proxy.textures) return;
       var tx = proxy.textures || {};
+      if (!Object.keys(tx).length) return;
+
+      done.add(matPath);
 
       function _load(path, cb) {
         if (!path) return;
@@ -1171,7 +1179,15 @@ import { ThreeRenderDelegateInterface }
           var resolved = _resolveHydraMaterialInMap(mats, materialId);
           if (resolved && resolved._material && this._mesh) {
             this._mesh.material = resolved._material;
-            _applyServerProxyToMaterial(resolved._material, materialId);
+            var rmat = this._mesh.material;
+            try {
+              if (rmat && rmat.name === 'DefaultMaterial') {
+                rmat = rmat.clone();
+                rmat.name = 'DefaultMaterial';
+                this._mesh.material = rmat;
+              }
+            } catch (_) {}
+            _applyServerProxyToMaterial(rmat || resolved._material, materialId);
             return;
           }
 
@@ -1184,14 +1200,28 @@ import { ThreeRenderDelegateInterface }
               }
             } catch (_) {}
             this._mesh.material = fallback._material;
-            _applyServerProxyToMaterial(fallback._material, materialId);
+            var fmat = this._mesh.material;
+            try {
+              if (fmat && fmat.name === 'DefaultMaterial') {
+                fmat = fmat.clone();
+                fmat.name = 'DefaultMaterial';
+                this._mesh.material = fmat;
+              }
+            } catch (_) {}
+            _applyServerProxyToMaterial(fmat || fallback._material, materialId);
             return;
           }
 
           var out = _origSetMaterial.call(this, materialId);
           try {
             if (this._mesh && this._mesh.material) {
-              _applyServerProxyToMaterial(this._mesh.material, materialId);
+              var omat = this._mesh.material;
+              if (omat && omat.name === 'DefaultMaterial') {
+                omat = omat.clone();
+                omat.name = 'DefaultMaterial';
+                this._mesh.material = omat;
+              }
+              _applyServerProxyToMaterial(omat || this._mesh.material, materialId);
             }
           } catch (_) {}
           return out;
