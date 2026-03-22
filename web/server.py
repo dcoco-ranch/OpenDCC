@@ -2523,17 +2523,22 @@ async def node_graph(prim_path: str):
 
         node["inputs"] = node_inputs
 
-    material_node = {
-        "id": mat_path,
-        "path": mat_path,
-        "name": mat_prim.GetName() or mat_path.rsplit("/", 1)[-1],
-        "type": "Material",
-        "shaderId": None,
-        "inputs": [],
-        "outputs": [],
-    }
-    nodes.append(material_node)
-    nodes_by_id[mat_path] = material_node
+    material_node = nodes_by_id.get(mat_path)
+    if not material_node:
+        material_node = {
+            "id": mat_path,
+            "path": mat_path,
+            "name": mat_prim.GetName() or mat_path.rsplit("/", 1)[-1],
+            "type": "Material",
+            "shaderId": None,
+            "inputs": [],
+            "outputs": [],
+        }
+        nodes.append(material_node)
+        nodes_by_id[mat_path] = material_node
+    else:
+        material_node["type"] = "Material"
+        material_node.setdefault("outputs", [])
 
     for mout in _node_iter_material_outputs(mat):
         label = str(mout.get("uiName") or mout.get("terminal") or "surface")
