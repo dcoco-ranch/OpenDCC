@@ -1268,7 +1268,7 @@ new ResizeObserver(resizeViewport).observe(vpWrap);
 resizeViewport();
 
 // ── Frame all / selection ─────────────────────────────────────────────────
-function _frameBox(box, logTag) {
+function _frameBox(box, logTag, preserveViewDirection) {
   if (!box || box.isEmpty()) return false;
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -1278,8 +1278,21 @@ function _frameBox(box, logTag) {
   const vFov = camera.fov * (Math.PI / 180);
   const dist = (radius / Math.tan(vFov / 2)) * 1.6;
 
+  var oldTarget = controls.target.clone();
+  var oldPos = camera.position.clone();
   controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66));
+
+  if (preserveViewDirection) {
+    var dir = new THREE.Vector3().subVectors(oldPos, oldTarget);
+    if (!Number.isFinite(dir.length()) || dir.length() < 1e-4) {
+      dir.set(0.66, 0.45, 0.66);
+    }
+    dir.normalize();
+    camera.position.copy(center).addScaledVector(dir, dist);
+  } else {
+    camera.position.copy(center).add(new THREE.Vector3(dist * 0.66, dist * 0.45, dist * 0.66));
+  }
+
   camera.lookAt(center);
   camera.near = Math.max(0.01, dist / 500);
   camera.far = dist * 200;
@@ -1330,7 +1343,7 @@ window.frameSelection = function() {
   });
 
   if (!hasMesh) return false;
-  return _frameBox(box, 'frameSelection');
+  return _frameBox(box, 'frameSelection', true);
 };
 
 window.frameAll = function () {
@@ -1343,7 +1356,7 @@ window.frameAll = function () {
     }
   });
   if (!hasMesh) return false;
-  return _frameBox(box, 'frameAll');
+  return _frameBox(box, 'frameAll', false);
 };
 
 window.frameSelectedOrAll = function() {
@@ -2177,39 +2190,103 @@ function highlightSelectedRows() {
 }
 
 // Find Three.js object matching a USD prim path, then attach gizmo
-function _attachGizmoForPrim(primPath) {
+function _gizmoMatchScore(obj, primPath) {
+  if (!obj || !primPath) return -1;
+  var n = String(obj.name || '');
+  var ud = obj.userData || {};
+  var p = String(primPath);
+  var last = p.split('/').pop();
+
+  if (ud.path === p) return 200;
+  if (obj._primPath === p) return 190;
+  if (n === p) return 180;
+  if (n.endsWith(p)) return 170;
+  if (('/' + n) === p) return 160;
+  if (n === last) return 120;
+
+  if (ud.path && typeof ud.path === 'string') {
+    if (p.endsWith(ud.path)) return 130;
+    if (ud.path.endsWith(p)) return 125;
+  }
+
+  if (n && last && n.toLowerCase() === last.toLowerCase()) return 110;
+  if (n && p.toLowerCase().indexOf('/' + n.toLowerCase()) >= 0) return 100;
+  return -1;
+}
+
+function _findBestObjectForPrimPath(primPath) {
+  var usdRoot = window._usdRoot;
+  if (!usdRoot) return null;
+
+  var best = null;
+  var bestScore = -1;
+  usdRoot.traverse(function(obj) {
+    if (!obj || !obj.isMesh) return;
+    var s = _gizmoMatchScore(obj, primPath);
+    if (s > bestScore) {
+      bestScore = s;
+      best = obj;
+    }
+  });
+  return best;
+}
+
+async function _resolveAttachPathForPrim(primPath) {
+  var p = String(primPath || '');
+  if (!p) return p;
+
+  // Direct path first
+  if (_findBestObjectForPrimPath(p)) return p;
+
+  // Try descendants (for Xform/Scope selections)
+  var queue = [p];
+  var seen = new Set(queue);
+  var maxDepth = 5;
+  var level = 0;
+  while (queue.length && level < maxDepth) {
+    var next = [];
+    for (var i = 0; i < queue.length; i++) {
+      var cur = queue[i];
+      var d = await api('/api/prims?path=' + encodeURIComponent(cur));
+      var kids = (d && Array.isArray(d.children)) ? d.children : [];
+      for (var k = 0; k < kids.length; k++) {
+        var c = kids[k] || {};
+        var cp = String(c.path || '');
+        if (!cp || seen.has(cp)) continue;
+        seen.add(cp);
+
+        if (_findBestObjectForPrimPath(cp)) return cp;
+        next.push(cp);
+      }
+    }
+    queue = next;
+    level += 1;
+  }
+
+  // Try parent chain fallback
+  var parts = p.split('/').filter(Boolean);
+  while (parts.length > 1) {
+    parts.pop();
+    var pp = '/' + parts.join('/');
+    if (_findBestObjectForPrimPath(pp)) return pp;
+  }
+
+  return p;
+}
+
+async function _attachGizmoForPrim(primPath) {
   if (!window._attachGizmo || !window._usdRoot) return;
   if (!primPath) { window._attachGizmo(null); return; }
 
-  var usdRoot = window._usdRoot;
-  var found = null;
-
-  // The Hydra delegate names meshes with the prim path or fragments of it
-  usdRoot.traverse(function(obj) {
-    if (found) return;
-    // Check various naming conventions
-    var n = obj.name || '';
-    var ud = obj.userData || {};
-    if (ud.path === primPath || n === primPath ||
-        n.endsWith(primPath) || ('/' + n) === primPath ||
-        n === primPath.split('/').pop()) {
-      found = obj;
-    }
-  });
+  var attachPath = await _resolveAttachPathForPrim(primPath);
+  var found = _findBestObjectForPrimPath(attachPath) || _findBestObjectForPrimPath(primPath);
 
   if (found) {
     found._primPath = primPath;
     window._attachGizmo(found);
-    console.log('[gizmo] attached to', primPath, found.type);
+    console.log('[gizmo] attached to', primPath, 'via', attachPath, found.type, found.name || '(unnamed)');
   } else {
-    // No matching mesh — try attaching to any visible mesh (debug)
     console.log('[gizmo] no Three.js object found for', primPath);
-    // List what names exist in the scene for debugging
-    var names = [];
-    usdRoot.traverse(function(obj) {
-      if (obj.isMesh || obj.isGroup) names.push(obj.name || '(unnamed ' + obj.type + ')');
-    });
-    if (names.length <= 20) console.log('[gizmo] scene objects:', names);
     window._attachGizmo(null);
   }
 }
@@ -2845,7 +2922,7 @@ async function selectPrimByPath(path, opts) {
   }
 
   // Try to attach gizmo to the corresponding Three.js object
-  if (!opts.skipGizmo) _attachGizmoForPrim(path);
+  if (!opts.skipGizmo) await _attachGizmoForPrim(path);
 
   var key = path.replace(/^\//, '');
   if (!key) return;
