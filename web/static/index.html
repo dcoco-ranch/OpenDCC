@@ -1619,10 +1619,35 @@ async function loadStage(reframe = true) {
           const r = await fetch('/api/stage/asset?path=' + encodeURIComponent(assetPath));
           if (!r.ok) { console.warn('[loadStage] failed to fetch:', assetPath); return; }
           const buf = await r.arrayBuffer();
+          const bytes = new Uint8Array(buf);
           const dir = '/' + assetPath.substring(0, assetPath.lastIndexOf('/'));
           const name = assetPath.substring(assetPath.lastIndexOf('/') + 1);
           try { USD.FS_unlink('/' + assetPath); } catch (_) {}
-          USD.FS_createDataFile(dir || '/', name, new Uint8Array(buf), true, true, true);
+          USD.FS_createDataFile(dir || '/', name, bytes, true, true, true);
+
+          // MaterialX texture path compatibility aliases:
+          // many ND_image nodes use paths like "tex/foo.jpg".
+          // Mirror files under /tex/... in WASM FS to satisfy driver.getFile lookups.
+          const lower = String(assetPath || '').toLowerCase();
+          const texPos = lower.indexOf('/tex/');
+          if (texPos >= 0) {
+            const texRel = assetPath.substring(texPos + 1); // "tex/..."
+            const aliasFull = '/' + texRel;
+            const slash = aliasFull.lastIndexOf('/');
+            const aliasDir = slash > 0 ? aliasFull.substring(0, slash) : '/';
+            const aliasName = slash > 0 ? aliasFull.substring(slash + 1) : texRel;
+            try { USD.FS_createPath('/', aliasDir.replace(/^\//, ''), true, true); } catch (_) {}
+            try { USD.FS_unlink(aliasFull); } catch (_) {}
+            try { USD.FS_createDataFile(aliasDir || '/', aliasName, bytes, true, true, true); } catch (_) {}
+
+            // Optional basename alias for delegates that request only filename
+            const baseAlias = '/' + aliasName;
+            try {
+              let exists = false;
+              try { exists = !!USD.FS_analyzePath(baseAlias).exists; } catch (_) {}
+              if (!exists) USD.FS_createDataFile('/', aliasName, bytes, true, true, true);
+            } catch (_) {}
+          }
         } catch (e) { console.warn('[loadStage] asset error:', assetPath, e.message); }
       }));
       if (reframe) {
