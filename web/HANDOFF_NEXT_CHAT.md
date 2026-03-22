@@ -4,12 +4,12 @@ Date: 2026-03-22
 Branch: `develop`
 
 ## Latest commits (newest first)
+- `6d4f953` feat(script-editor): add CodeMirror python highlighting and autocomplete
+- `320d28f` feat(viewport): add 1/2/3/4 panel presets with multi-view rendering
+- `9b78f46` feat(web-ui): add resizable panel splitters and layout persistence
+- `859fc72` feat(curve): add interpolation modes (linear/step/bezier)
+- `47fd729` fix(curve): improve keyframe coercion and move validation
 - `56f3a32` fix(web-ui): prevent grid/statusbar overflow in panel layout
-- `eae05f5` refactor(web-ui): separate curve editor panel and declutter properties
-- `2f377fd` feat(web): add curve editor preview for time-sampled attributes
-- `69ad126` feat(web): sync timeline with server time-sampled attribute queries
-- `1dbecdd` feat(web): add timeline stepping controls and FPS input
-- `09563b5` feat(web): improve timeline range from stage start/end TimeCode
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
