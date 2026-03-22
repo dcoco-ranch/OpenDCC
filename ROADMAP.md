@@ -117,6 +117,7 @@
 - [x] Création / suppression de nodes shader dans le graphe
 - [x] Édition des valeurs d’inputs shader (constantes) depuis le workbench
 - [x] Menu contextuel clic droit (filtrable) pour ajout rapide de nodes
+- [x] Grille visuelle + option snap-to-grid dans le workbench node
 
 ### 4.4 — Script Editor amélioré (remplace `opendcc.ui.script_editor`)
 - [x] Syntax highlighting Python (CodeMirror, fallback textarea si CDN indisponible)

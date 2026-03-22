@@ -408,10 +408,26 @@
       overflow: hidden;
       background: #1a1a1a;
     }
+    #node-grid-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(120,140,170,.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120,140,170,.08) 1px, transparent 1px),
+        linear-gradient(rgba(90,110,140,.14) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(90,110,140,.14) 1px, transparent 1px);
+      background-size: 24px 24px, 24px 24px, 120px 120px, 120px 120px;
+      background-position: 0 0, 0 0, 0 0, 0 0;
+      opacity: .9;
+      z-index: 0;
+    }
     #node-canvas {
       width: 100%;
       height: 100%;
       display: block;
+      position: relative;
+      z-index: 1;
     }
     #node-inspector {
       border: 1px solid var(--border);
@@ -666,7 +682,7 @@
     <!-- Node editor workbench (detached from inspector) -->
     <div id="node-workbench" class="split" style="display:none">
       <div class="panel-header" style="padding:6px 10px">
-        <span>Node Editor <span class="mat-tag">Static MVP</span></span>
+        <span>Node Editor <span class="mat-tag">Interactive</span></span>
         <div style="display:flex;gap:6px;align-items:center">
           <span id="node-workbench-status" style="color:var(--text2);font-size:10px;min-width:110px;text-align:right"></span>
           <button id="btn-node-split" style="padding:1px 6px;font-size:10px" onclick="toggleNodeWorkbenchSplit()" title="Split with viewport">Split</button>
@@ -3445,6 +3461,9 @@ const _nodeGraphUi = {
   menuPos: null,
   liteLoadPromise: null,
   liteLoadFailedAt: 0,
+  showGrid: true,
+  snapToGrid: false,
+  gridSize: 24,
 };
 
 function _nodeGetSelectedLiteNode() {
@@ -3734,15 +3753,53 @@ function _nodeRenderSelectedNodeEditor(node) {
   }
 }
 
+function _nodeSyncGridUi() {
+  var overlay = document.getElementById('node-grid-overlay');
+  var gbtn = document.getElementById('node-grid-btn');
+  var sbtn = document.getElementById('node-snap-btn');
+
+  if (overlay) {
+    overlay.style.display = _nodeGraphUi.showGrid ? 'block' : 'none';
+  }
+  if (gbtn) gbtn.classList.toggle('primary', !!_nodeGraphUi.showGrid);
+  if (sbtn) sbtn.classList.toggle('primary', !!_nodeGraphUi.snapToGrid);
+}
+
+function _nodeUpdateGridTransform() {
+  var overlay = document.getElementById('node-grid-overlay');
+  var canvas = _nodeGraphUi.canvas;
+  if (!overlay || !_nodeGraphUi.showGrid || !canvas || !canvas.ds) return;
+
+  var step = Number(_nodeGraphUi.gridSize || 24);
+  var major = step * 5;
+  var scale = Number(canvas.ds.scale || 1);
+  var px = step * scale;
+  var majorPx = major * scale;
+  if (!Number.isFinite(px) || px < 6) px = 6;
+  if (!Number.isFinite(majorPx) || majorPx < px * 2) majorPx = px * 5;
+
+  var ox = Number(canvas.ds.offset ? canvas.ds.offset[0] : 0) * scale;
+  var oy = Number(canvas.ds.offset ? canvas.ds.offset[1] : 0) * scale;
+  ox = Number.isFinite(ox) ? ox : 0;
+  oy = Number.isFinite(oy) ? oy : 0;
+
+  overlay.style.backgroundSize = px + 'px ' + px + 'px, ' + px + 'px ' + px + 'px, ' + majorPx + 'px ' + majorPx + 'px, ' + majorPx + 'px ' + majorPx + 'px';
+  overlay.style.backgroundPosition = ox + 'px ' + oy + 'px, ' + ox + 'px ' + oy + 'px, ' + ox + 'px ' + oy + 'px, ' + ox + 'px ' + oy + 'px';
+}
+
 function _nodeSetToolbarEnabled(enabled) {
   var sel = document.getElementById('node-create-shader');
   var name = document.getElementById('node-create-name');
   var addBtn = document.getElementById('node-add-btn');
   var delBtn = document.getElementById('node-del-btn');
+  var gbtn = document.getElementById('node-grid-btn');
+  var sbtn = document.getElementById('node-snap-btn');
   if (sel) sel.disabled = !enabled;
   if (name) name.disabled = !enabled;
   if (addBtn) addBtn.disabled = !enabled;
   if (delBtn) delBtn.disabled = !enabled;
+  if (gbtn) gbtn.disabled = !enabled;
+  if (sbtn) sbtn.disabled = !enabled;
 }
 
 function _nodePopulateLibrary(items) {
@@ -3788,6 +3845,8 @@ function _nodeEnsureWorkbenchLayout(host) {
     + '<button id="node-add-btn" style="padding:1px 6px;font-size:10px">＋ Node</button>'
     + '<span style="width:1px;height:14px;background:var(--border);margin:0 4px"></span>'
     + '<button id="node-del-btn" style="padding:1px 6px;font-size:10px">🗑 Delete selected</button>'
+    + '<button id="node-grid-btn" style="padding:1px 6px;font-size:10px">Grid</button>'
+    + '<button id="node-snap-btn" style="padding:1px 6px;font-size:10px">Snap</button>'
     + '<span style="flex:1"></span>'
     + '<span id="node-legend" style="color:var(--text2);font-size:10px">Drag output→input to connect • Right-click canvas to add node</span>';
 
@@ -3797,6 +3856,9 @@ function _nodeEnsureWorkbenchLayout(host) {
 
   var wrap = document.createElement('div');
   wrap.id = 'node-canvas-wrap';
+  var gridOverlay = document.createElement('div');
+  gridOverlay.id = 'node-grid-overlay';
+  wrap.appendChild(gridOverlay);
   var canvas = document.createElement('canvas');
   canvas.id = 'node-canvas';
   wrap.appendChild(canvas);
@@ -3843,6 +3905,21 @@ function _nodeEnsureWorkbenchLayout(host) {
     await _deleteSelectedNodeInWorkbench();
   });
 
+  var gridBtn = toolbar.querySelector('#node-grid-btn');
+  if (gridBtn) gridBtn.addEventListener('click', function() {
+    _nodeGraphUi.showGrid = !_nodeGraphUi.showGrid;
+    _nodeSyncGridUi();
+    _nodeUpdateGridTransform();
+  });
+
+  var snapBtn = toolbar.querySelector('#node-snap-btn');
+  if (snapBtn) snapBtn.addEventListener('click', function() {
+    _nodeGraphUi.snapToGrid = !_nodeGraphUi.snapToGrid;
+    _nodeSyncGridUi();
+  });
+
+  _nodeSyncGridUi();
+
   var menuFilter = document.getElementById('node-menu-filter');
   if (menuFilter) {
     menuFilter.addEventListener('input', function() {
@@ -3884,6 +3961,9 @@ function _nodeEnsureWorkbenchLayout(host) {
     graphCanvas.allow_dragnodes = true;
     graphCanvas.allow_dragcanvas = true;
     graphCanvas.always_render_background = true;
+    graphCanvas.onRenderBackground = function() {
+      _nodeUpdateGridTransform();
+    };
     graphCanvas.onNodeSelected = function(n) {
       setStatus('Node selected: ' + ((n && n.title) || '')); 
       _nodeRenderSelectedNodeEditor(n || null);
@@ -3894,16 +3974,40 @@ function _nodeEnsureWorkbenchLayout(host) {
 
     graph.onNodeConnectionChange = async function(type, node, slot, connectedNode, connectedSlot) {
       if (_nodeGraphUi.suppress) return;
-      if (!node || type !== LiteGraph.INPUT) return;
+      if (!node || (type !== LiteGraph.INPUT && type !== 1)) return;
       var input = node.inputs && node.inputs[slot];
       if (!input) return;
 
       _suppressMatWsUntil = Date.now() + 250;
 
-      if (input.link != null && connectedNode && connectedNode.__nodePath) {
-        var srcOutput = (connectedNode.outputs && connectedNode.outputs[connectedSlot] && connectedNode.outputs[connectedSlot].name) || '';
+      if (input.link != null) {
+        var srcNode = connectedNode;
+        var srcSlotIndex = connectedSlot;
+
+        if ((!srcNode || srcSlotIndex == null) && _nodeGraphUi.graph && _nodeGraphUi.graph.links) {
+          var lk = _nodeGraphUi.graph.links[input.link];
+          if (lk) {
+            if (!srcSlotIndex && srcSlotIndex !== 0) srcSlotIndex = lk.origin_slot;
+            if (!srcNode && _nodeGraphUi.graph.getNodeById) {
+              srcNode = _nodeGraphUi.graph.getNodeById(lk.origin_id);
+            }
+          }
+        }
+
+        if (!srcNode || !srcNode.__nodePath) {
+          return;
+        }
+
+        var srcOutput = (srcNode.outputs && srcNode.outputs[srcSlotIndex] && srcNode.outputs[srcSlotIndex].name) || '';
+        if (!srcOutput) {
+          setStatus('Node connect failed: source output unresolved', true);
+          _nodeWorkbenchState.signature = '';
+          loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+          return;
+        }
+
         var payload = {
-          source_node_path: connectedNode.__nodePath,
+          source_node_path: srcNode.__nodePath,
           source_output: srcOutput,
         };
         if (node.__isMaterial) {
@@ -3948,6 +4052,11 @@ function _nodeEnsureWorkbenchLayout(host) {
 
     graph.onNodeMoved = function(node) {
       if (!node || !node.__nodePath || !Array.isArray(node.pos)) return;
+      if (_nodeGraphUi.snapToGrid) {
+        var gs = Number(_nodeGraphUi.gridSize || 24);
+        node.pos[0] = Math.round(Number(node.pos[0] || 0) / gs) * gs;
+        node.pos[1] = Math.round(Number(node.pos[1] || 0) / gs) * gs;
+      }
       _nodeGraphUi.nodePositions[node.__nodePath] = { x: Number(node.pos[0] || 0), y: Number(node.pos[1] || 0) };
     };
 
@@ -3959,6 +4068,7 @@ function _nodeEnsureWorkbenchLayout(host) {
 
     var ro = new ResizeObserver(function() {
       try { graphCanvas.resize(); } catch (_) {}
+      _nodeUpdateGridTransform();
     });
     ro.observe(wrap);
   } catch (e) {
@@ -4041,6 +4151,7 @@ function _nodeBuildInteractiveGraph(data) {
     _nodeRenderSelectedNodeEditor(sel || null);
 
     try { _nodeGraphUi.canvas.resize(); } catch (_) {}
+    _nodeUpdateGridTransform();
     return true;
   } catch (_) {
     _nodeGraphUi.suppress = false;
@@ -4887,6 +4998,9 @@ const _frameLabel = document.getElementById('timeline-frame');
 const _fpsInput = document.getElementById('timeline-fps');
 let _attrRefreshInFlight = false;
 let _lastAttrRefreshAt = 0;
+let _lastAttrRefreshTc = NaN;
+let _lastAttrRefreshPrim = '';
+let _lastTimeCodeNotified = NaN;
 
 async function _refreshSelectedPrimAtTimelineTime(force) {
   if (!_selectedPaths.length || typeof selectPrimByPath !== 'function') return;
@@ -4895,8 +5009,14 @@ async function _refreshSelectedPrimAtTimelineTime(force) {
   if (!force && (now - _lastAttrRefreshAt) < 200) return;
   if (_attrRefreshInFlight) return;
 
+  var tc = Number(window._currentTimeCode);
+
   var primPath = _selectedPaths[_selectedPaths.length - 1];
   if (!primPath) return;
+
+  if (primPath === _lastAttrRefreshPrim && Number.isFinite(tc) && Number.isFinite(_lastAttrRefreshTc) && Math.abs(tc - _lastAttrRefreshTc) < 1e-6) {
+    return;
+  }
 
   _lastAttrRefreshAt = now;
   _attrRefreshInFlight = true;
@@ -4905,9 +5025,12 @@ async function _refreshSelectedPrimAtTimelineTime(force) {
       skipGizmo: true,
       skipRowSync: true,
       skipMaterial: true,
+      skipNode: true,
       skipCurve: true,
-      timeCode: Number(window._currentTimeCode),
+      timeCode: tc,
     });
+    if (Number.isFinite(tc)) _lastAttrRefreshTc = tc;
+    _lastAttrRefreshPrim = primPath;
   } finally {
     _attrRefreshInFlight = false;
   }
@@ -5000,8 +5123,14 @@ window._onTimeCodeChanged = function(tc, playing) {
     window._currentTimeCode = Number(tc);
     _curveState.currentTime = Number(tc);
     if (window._curvePanelOpen) _renderCurveFromState(_curveState.currentTime);
+
+    var tcn = Number(tc);
+    var changed = !Number.isFinite(_lastTimeCodeNotified) || Math.abs(tcn - _lastTimeCodeNotified) > 1e-6;
+    _lastTimeCodeNotified = tcn;
+    if (changed) _refreshSelectedPrimAtTimelineTime(false);
+    return;
   }
-  _refreshSelectedPrimAtTimelineTime(!playing);
+  _refreshSelectedPrimAtTimelineTime(false);
 };
 
 if (window._timelineRange) {

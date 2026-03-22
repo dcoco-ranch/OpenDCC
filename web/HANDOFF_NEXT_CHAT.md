@@ -27,6 +27,9 @@ Branch: `develop`
     - right-click searchable context menu in canvas for modern node add workflow
     - node selection feedback + draggable graph nodes with local position persistence
     - LiteGraph runtime self-hosted (`/static/vendor/litegraph.min.js`) to avoid COEP cross-origin blocking
+    - anti-flicker fix: timeline attr refresh no longer reloads node workbench every frame when paused
+    - connect stability hardening: robust source-slot resolution in LiteGraph callback
+    - node workbench grid overlay + optional snap-to-grid toggle
   - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
     - `GET /api/node_graph/library`
     - `POST /api/node_graph/create_node`
