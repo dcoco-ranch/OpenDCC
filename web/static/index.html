@@ -33,8 +33,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
 
-  <!-- Node editor runtime -->
-  <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.17/build/litegraph.min.js"></script>
+  <!-- Node editor runtime (self-hosted to satisfy COEP) -->
+  <script src="/static/vendor/litegraph.min.js"></script>
 
   <style>
     /* ── Reset ─────────────────────────────────────────────────────────── */
@@ -3443,6 +3443,8 @@ const _nodeGraphUi = {
   suppress: false,
   library: [],
   menuPos: null,
+  liteLoadPromise: null,
+  liteLoadFailedAt: 0,
 };
 
 function _nodeGetSelectedLiteNode() {
@@ -3563,26 +3565,54 @@ function _nodeAttachContextMenuHandlers(canvasEl) {
 async function _nodeEnsureLiteGraphLoaded() {
   if (window.LiteGraph) return true;
 
+  if (_nodeGraphUi.liteLoadPromise) {
+    return await _nodeGraphUi.liteLoadPromise;
+  }
+
+  var now = Date.now();
+  if (_nodeGraphUi.liteLoadFailedAt && (now - _nodeGraphUi.liteLoadFailedAt) < 5000) {
+    return false;
+  }
+
   async function loadOne(src) {
     return await new Promise(function(resolve) {
+      var existing = document.querySelector('script[data-node-litegraph="' + src + '"]');
+      if (existing) {
+        if (window.LiteGraph) return resolve(true);
+        existing.addEventListener('load', function() { resolve(!!window.LiteGraph); }, { once: true });
+        existing.addEventListener('error', function() { resolve(false); }, { once: true });
+        return;
+      }
+
       var s = document.createElement('script');
       s.src = src;
-      s.onload = function() { resolve(true); };
+      s.setAttribute('data-node-litegraph', src);
+      s.onload = function() { resolve(!!window.LiteGraph); };
       s.onerror = function() { resolve(false); };
       document.head.appendChild(s);
     });
   }
 
-  var urls = [
-    'https://cdn.jsdelivr.net/npm/litegraph.js@0.7.17/build/litegraph.min.js',
-    'https://unpkg.com/litegraph.js@0.7.17/build/litegraph.min.js',
-  ];
+  _nodeGraphUi.liteLoadPromise = (async function() {
+    var urls = [
+      '/static/vendor/litegraph.min.js',
+    ];
 
-  for (var i = 0; i < urls.length; i++) {
-    var ok = await loadOne(urls[i]);
-    if (ok && window.LiteGraph) return true;
-  }
-  return !!window.LiteGraph;
+    for (var i = 0; i < urls.length; i++) {
+      var ok = await loadOne(urls[i]);
+      if (ok && window.LiteGraph) {
+        _nodeGraphUi.liteLoadFailedAt = 0;
+        return true;
+      }
+    }
+
+    _nodeGraphUi.liteLoadFailedAt = Date.now();
+    return false;
+  })();
+
+  var loaded = await _nodeGraphUi.liteLoadPromise;
+  _nodeGraphUi.liteLoadPromise = null;
+  return loaded;
 }
 
 async function _deleteSelectedNodeInWorkbench() {

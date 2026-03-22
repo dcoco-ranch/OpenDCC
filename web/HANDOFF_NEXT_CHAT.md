@@ -26,6 +26,7 @@ Branch: `develop`
     - selected-node input value editing (`set_input`) for constant authoring
     - right-click searchable context menu in canvas for modern node add workflow
     - node selection feedback + draggable graph nodes with local position persistence
+    - LiteGraph runtime self-hosted (`/static/vendor/litegraph.min.js`) to avoid COEP cross-origin blocking
   - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
     - `GET /api/node_graph/library`
     - `POST /api/node_graph/create_node`
