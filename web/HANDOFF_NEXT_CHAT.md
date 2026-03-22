@@ -4,12 +4,12 @@ Date: 2026-03-22
 Branch: `develop`
 
 ## Latest commits (newest first)
+- `35af392` feat(material): add unbind, purpose/strength binding, and save-edits-as export
 - `e0a2e2c` perf(material): avoid full viewport reload on shader parameter changes
 - `05a7738` feat(usd-layering): author pxr edits in sidecar layer and scope material preview
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 - `20ade4a` docs(handoff): include material bind+texture milestone commit
 - `77f1186` docs(handoff): add material editor milestone to latest commits
-- `8f7e8bc` feat(material-editor): add dedicated inspector tab with UsdPreviewSurface controls
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
@@ -24,6 +24,8 @@ Branch: `develop`
   - UsdPreviewSurface param editing (color/roughness/metallic/opacity/etc.)
   - texture slot entry (connect/disconnect `UsdUVTexture` per slot)
   - one-click create+bind material for prims with no material
+  - explicit unbind (current purpose or all purposes)
+  - bind options: purpose (`allPurpose|preview|full`) and strength (`weaker/strongerThanDescendants`)
   - shader ID detection flags for MaterialX / vendor networks (read-only for now)
   - immediate viewport preview updates on numeric/color edits
   - preview scope safety: no global fallback tinting (prevents whole-stage accidental color preview)
@@ -32,6 +34,7 @@ Branch: `develop`
   - on stage open, edits target a sidecar layer `*.opendcc_edits.usda`
   - root imported stage remains untouched
   - `/api/stage/save` saves edit layer (not root) in this mode
+  - `Save Edits As…` UI + `/api/stage/save_edits_as` for clean overrides export
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key
@@ -78,9 +81,12 @@ Branch: `develop`
 - Samples: `/api/prim_samples/{path}`
 - Material ops:
   - `/api/material/{primPath}` (inspect binding + shader ids + preview params + texture connections)
-  - `/api/material/bind` (create/bind material)
+  - `/api/material/bind` (create/bind material with purpose/strength)
+  - `/api/material/unbind` (remove direct binding opinions)
   - `/api/material/{matPath}/set` (set preview parameter)
   - `/api/material/{matPath}/texture` (connect/clear texture slot)
+- Layer/export ops:
+  - `/api/stage/save_edits_as` (export current edits layer)
 - Keyframe ops:
   - `/api/prim/{path}/keyframe/set`
   - `/api/prim/{path}/keyframe/delete`
