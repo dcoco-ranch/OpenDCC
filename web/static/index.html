@@ -398,6 +398,7 @@
     <button onclick="openStageModal()">Open Stage…</button>
     <button onclick="newStage()">New</button>
     <button onclick="saveStage()">Save</button>
+    <button onclick="saveEditsLayerAs()" title="Export current edit layer overrides">Save Edits As…</button>
     <button onclick="downloadUSDA()" title="Download USDA">⬇ USDA</button>
     <button onclick="downloadGLB()" title="Download GLB">⬇ GLB</button>
     <button id="btn-material-panel" onclick="setInspectorTab('material')" title="Open Material Editor">Material Editor</button>
@@ -1406,6 +1407,7 @@ async function api(url, method = 'GET', body = null) {
 // Outliner refreshes instantly; viewport catches up after 600ms of calm.
 let _vpReloadTimer = null;
 let _matPanelRefreshTimer = null;
+let _suppressMatWsUntil = 0;
 
 function _scheduleViewportReload() {
   if (window._gizmoJustDragged) return;  // skip reload after gizmo transform
@@ -1630,6 +1632,7 @@ function connectWS() {
     }
     if (msg.event === 'material_changed') {
       // Avoid full stage reload on material tweaks (low-latency interaction).
+      if (Date.now() < _suppressMatWsUntil) return;
       setStatus('Material updated');
       _scheduleMaterialPanelRefresh();
     }
@@ -1685,12 +1688,37 @@ async function confirmOpenStage() {
   await api('/api/stage/open', 'POST', { path: p });
 }
 async function newStage()  { await api('/api/stage/new',  'POST', {}); }
-async function saveStage() { await api('/api/stage/save', 'POST', {}); setStatus('Saved.'); }
+async function saveStage() {
+  var r = await api('/api/stage/save', 'POST', {});
+  if (!r || !r.ok) return;
+  if (r.saved === 'edit_layer' && r.layer_path) {
+    setStatus('Saved edits layer: ' + r.layer_path);
+  } else {
+    setStatus('Saved.');
+  }
+}
+
+async function saveEditsLayerAs() {
+  var info = await api('/api/stage/info');
+  var editLayer = info && info.stage ? (info.stage.edit_layer || '') : '';
+  var suggested = editLayer ? String(editLayer).replace(/\.usda$/i, '.export.usda') : 'scene_edits.export.usda';
+  var out = prompt('Export edits layer as:', suggested);
+  if (!out) return;
+
+  var res = await api('/api/stage/save_edits_as', 'POST', {
+    path: out,
+    switch_to_exported_layer: false,
+  });
+  if (res && res.ok) {
+    setStatus('Edits exported: ' + (res.path || out));
+  }
+}
 
 window.openStageModal   = openStageModal;
 window.confirmOpenStage = confirmOpenStage;
 window.newStage         = newStage;
 window.saveStage        = saveStage;
+window.saveEditsLayerAs = saveEditsLayerAs;
 
 // ── Selection state ───────────────────────────────────────────────────────
 var _selectedPaths = [];
@@ -2318,14 +2346,42 @@ function _applyMaterialPreview(paramName, value) {
   });
 }
 
-async function bindDefaultMaterial(primPath) {
+function _getMaterialBindOptions() {
+  var purpose = document.getElementById('mat-bind-purpose')?.value || 'allPurpose';
+  var strength = document.getElementById('mat-bind-strength')?.value || 'weakerThanDescendants';
+  return { purpose: purpose, binding_strength: strength };
+}
+
+async function bindDefaultMaterial(primPath, extra) {
   if (!primPath) return false;
-  var res = await api('/api/material/bind', 'POST', {
+  extra = extra || {};
+  var opts = _getMaterialBindOptions();
+  var payload = {
     prim_path: primPath,
-    create_if_missing: true,
-  });
+    create_if_missing: (extra.create_if_missing !== false),
+    material_path: extra.material_path || null,
+    purpose: opts.purpose,
+    binding_strength: opts.binding_strength,
+  };
+  _suppressMatWsUntil = Date.now() + 250;
+  var res = await api('/api/material/bind', 'POST', payload);
   if (!res || !res.ok) return false;
   setStatus('Material bound: ' + (res.materialPath || ''));
+  await loadMaterialPanel(primPath, Number(window._currentTimeCode));
+  return true;
+}
+
+async function unbindMaterial(primPath, allPurposes) {
+  if (!primPath) return false;
+  var opts = _getMaterialBindOptions();
+  _suppressMatWsUntil = Date.now() + 250;
+  var res = await api('/api/material/unbind', 'POST', {
+    prim_path: primPath,
+    purpose: opts.purpose,
+    all_purposes: !!allPurposes,
+  });
+  if (!res || !res.ok) return false;
+  setStatus(allPurposes ? 'All material bindings removed' : ('Material unbound (' + opts.purpose + ')'));
   await loadMaterialPanel(primPath, Number(window._currentTimeCode));
   return true;
 }
@@ -2334,6 +2390,7 @@ async function bindDefaultMaterial(primPath) {
 async function setMaterialParam(materialPath, paramName, value, opts) {
   opts = opts || {};
   var key = materialPath.replace(/^\//, '');
+  _suppressMatWsUntil = Date.now() + 250;
   var res = await api('/api/material/' + key + '/set', 'POST', { param: paramName, value: value });
   if (!res || !res.ok) return false;
 
@@ -2350,6 +2407,7 @@ async function setMaterialParam(materialPath, paramName, value, opts) {
 async function setMaterialTexture(materialPath, paramName, assetPath, opts) {
   opts = opts || {};
   var key = materialPath.replace(/^\//, '');
+  _suppressMatWsUntil = Date.now() + 250;
   var res = await api('/api/material/' + key + '/texture', 'POST', {
     param: paramName,
     asset_path: String(assetPath || ''),
@@ -2420,6 +2478,96 @@ function _appendTextureSlotRow(tbl, mat, slotName, texInfo) {
   tbl.appendChild(tr);
 }
 
+function _appendMaterialBindingControls(host, primPath, mat) {
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-bottom:8px;background:rgba(255,255,255,.02)';
+
+  var row1 = document.createElement('div');
+  row1.className = 'mat-control';
+  row1.style.marginBottom = '6px';
+
+  var pLabel = document.createElement('span');
+  pLabel.textContent = 'Purpose';
+  pLabel.style.color = 'var(--text2)';
+  pLabel.style.minWidth = '54px';
+
+  var purpose = document.createElement('select');
+  purpose.id = 'mat-bind-purpose';
+  purpose.style.cssText = 'height:20px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:10px;padding:1px 4px;border-radius:3px;';
+  ['allPurpose','preview','full'].forEach(function(v) {
+    var o = document.createElement('option'); o.value = v; o.textContent = v; purpose.appendChild(o);
+  });
+
+  var sLabel = document.createElement('span');
+  sLabel.textContent = 'Strength';
+  sLabel.style.color = 'var(--text2)';
+  sLabel.style.minWidth = '54px';
+
+  var strength = document.createElement('select');
+  strength.id = 'mat-bind-strength';
+  strength.style.cssText = 'height:20px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:10px;padding:1px 4px;border-radius:3px;';
+  ['weakerThanDescendants','strongerThanDescendants'].forEach(function(v) {
+    var o = document.createElement('option'); o.value = v; o.textContent = v; strength.appendChild(o);
+  });
+
+  var bp = (mat && mat.binding) ? (mat.binding.purpose || 'allPurpose') : 'allPurpose';
+  var bs = (mat && mat.binding) ? (mat.binding.strength || 'weakerThanDescendants') : 'weakerThanDescendants';
+  purpose.value = bp;
+  strength.value = (bs === 'strongerThanDescendants') ? 'strongerThanDescendants' : 'weakerThanDescendants';
+
+  row1.appendChild(pLabel);
+  row1.appendChild(purpose);
+  row1.appendChild(sLabel);
+  row1.appendChild(strength);
+  wrap.appendChild(row1);
+
+  var row2 = document.createElement('div');
+  row2.className = 'mat-control';
+
+  var matPath = document.createElement('input');
+  matPath.id = 'mat-bind-path';
+  matPath.type = 'text';
+  matPath.placeholder = '/World/Looks/MyMaterial';
+  matPath.style.margin = '0';
+  matPath.value = (mat && mat.materialPath) ? mat.materialPath : '';
+
+  var bindBtn = document.createElement('button');
+  bindBtn.textContent = 'Bind Existing';
+  bindBtn.style.cssText = 'padding:1px 6px;font-size:10px';
+  bindBtn.addEventListener('click', function() {
+    var path = (matPath.value || '').trim();
+    if (!path) return;
+    bindDefaultMaterial(primPath, { create_if_missing: false, material_path: path });
+  });
+
+  var createBtn = document.createElement('button');
+  createBtn.className = 'primary';
+  createBtn.textContent = '+ Create & Bind';
+  createBtn.style.cssText = 'padding:1px 6px;font-size:10px';
+  createBtn.addEventListener('click', function() { bindDefaultMaterial(primPath); });
+
+  var unbindBtn = document.createElement('button');
+  unbindBtn.textContent = 'Unbind';
+  unbindBtn.style.cssText = 'padding:1px 6px;font-size:10px';
+  unbindBtn.disabled = !(mat && mat.bound);
+  unbindBtn.addEventListener('click', function() { unbindMaterial(primPath, false); });
+
+  var unbindAllBtn = document.createElement('button');
+  unbindAllBtn.textContent = 'Unbind All';
+  unbindAllBtn.style.cssText = 'padding:1px 6px;font-size:10px';
+  unbindAllBtn.disabled = !(mat && mat.bound);
+  unbindAllBtn.addEventListener('click', function() { unbindMaterial(primPath, true); });
+
+  row2.appendChild(matPath);
+  row2.appendChild(bindBtn);
+  row2.appendChild(createBtn);
+  row2.appendChild(unbindBtn);
+  row2.appendChild(unbindAllBtn);
+  wrap.appendChild(row2);
+
+  host.appendChild(wrap);
+}
+
 // ── Material editor panel (UsdPreviewSurface + texture slots) ────────────
 async function loadMaterialPanel(primPath, timeCode) {
   var host = document.getElementById('material-scroll');
@@ -2443,17 +2591,13 @@ async function loadMaterialPanel(primPath, timeCode) {
   }
 
   var mat = await api(matUrl);
+
+  _appendMaterialBindingControls(host, primPath, mat);
+
   if (!mat.bound) {
     var msg = document.createElement('div');
     msg.style.cssText = 'padding:8px;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:4px;display:flex;flex-direction:column;gap:8px';
     msg.innerHTML = 'No bound material found on selected prim.';
-
-    var btn = document.createElement('button');
-    btn.className = 'primary';
-    btn.style.cssText = 'width:max-content;padding:2px 8px;font-size:11px';
-    btn.textContent = '+ Create & Bind UsdPreviewSurface';
-    btn.addEventListener('click', function() { bindDefaultMaterial(primPath); });
-    msg.appendChild(btn);
 
     var hint = document.createElement('div');
     hint.style.cssText = 'color:var(--text2);font-size:10px';
@@ -2484,9 +2628,13 @@ async function loadMaterialPanel(primPath, timeCode) {
   var shaderInfo = document.createElement('div');
   shaderInfo.style.cssText = 'padding:6px 8px;color:var(--text2);font-size:10px;border-bottom:1px solid #3a3a3a';
   var ids = (mat.shaderIds && mat.shaderIds.length) ? mat.shaderIds.join(', ') : 'none';
+  var bindInfo = mat.binding || {};
   shaderInfo.innerHTML = 'Shaders: ' + ids
     + (mat.hasMaterialX ? ' <span class="mat-tag">MaterialX present</span>' : '')
-    + (mat.hasVendorShaders ? ' <span class="mat-tag">Vendor shader(s) present</span>' : '');
+    + (mat.hasVendorShaders ? ' <span class="mat-tag">Vendor shader(s) present</span>' : '')
+    + '<br/>Binding: purpose=' + (bindInfo.purpose || 'allPurpose')
+    + ', strength=' + (bindInfo.strength || 'weakerThanDescendants')
+    + (bindInfo.isDirect ? ' (direct)' : ' (inherited/computed)');
   body.appendChild(shaderInfo);
 
   if (!mat.editablePreviewSurface) {

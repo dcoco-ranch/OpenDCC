@@ -1299,6 +1299,56 @@ async def stage_save():
     return {"ok": True, "stub": True}
 
 
+class _StageSaveEditsAsReq(BaseModel):
+    path: str
+    switch_to_exported_layer: bool = False
+
+
+@app.post("/api/stage/save_edits_as")
+async def stage_save_edits_as(req: _StageSaveEditsAsReq):
+    """Export current authored edit layer opinions to a dedicated USDA file."""
+    global _pxr_edit_layer, _pxr_edit_layer_path
+
+    if _opendcc_available:
+        raise HTTPException(status_code=501, detail="save_edits_as is currently implemented for pxr mode")
+
+    if not (_pxr_available and _pxr_stage and _pxr_edit_layer):
+        raise HTTPException(status_code=400, detail="No active pxr edit layer")
+
+    out_path = str(req.path or "").strip()
+    if not out_path:
+        raise HTTPException(status_code=400, detail="Missing destination path")
+
+    base_dir = os.path.dirname(_pxr_stage_path or "") if _pxr_stage_path else os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
+    resolved = out_path if os.path.isabs(out_path) else os.path.normpath(os.path.join(base_dir, out_path))
+
+    out_dir = os.path.dirname(resolved)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    try:
+        ok = _pxr_edit_layer.Export(resolved)
+        if ok is False:
+            raise RuntimeError("Layer export returned false")
+
+        if req.switch_to_exported_layer:
+            from pxr import Sdf
+            layer = Sdf.Layer.FindOrOpen(resolved)
+            if not layer:
+                raise RuntimeError(f"Failed to open exported layer: {resolved}")
+            _pxr_stage.SetEditTarget(layer)
+            _pxr_edit_layer = layer
+            _pxr_edit_layer_path = resolved
+
+        return {
+            "ok": True,
+            "path": resolved,
+            "switched": bool(req.switch_to_exported_layer),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/stage/info")
 async def stage_info():
     stage = _current_stage()
@@ -1597,6 +1647,106 @@ def _material_texture_info(inp):
     }
 
 
+def _purpose_to_token_name(purpose: Optional[str]) -> str:
+    p = str(purpose or "allPurpose").strip()
+    if not p:
+        return "allPurpose"
+    valid = {"allPurpose", "preview", "full"}
+    return p if p in valid else "allPurpose"
+
+
+def _strength_to_token_name(strength: Optional[str]) -> str:
+    s = str(strength or "weakerThanDescendants").strip()
+    valid = {"weakerThanDescendants", "strongerThanDescendants"}
+    return s if s in valid else "weakerThanDescendants"
+
+
+def _usdshade_token(tokens, name: str):
+    try:
+        return getattr(tokens, name)
+    except Exception:
+        return name
+
+
+def _bind_material_with_options(binding_api, material, purpose: Optional[str], strength: Optional[str]) -> tuple[str, str]:
+    """Bind material with purpose/strength, with compatibility fallbacks."""
+    from pxr import UsdShade
+
+    p = _purpose_to_token_name(purpose)
+    s = _strength_to_token_name(strength)
+
+    p_tok = _usdshade_token(UsdShade.Tokens, p)
+    s_tok = _usdshade_token(UsdShade.Tokens, s)
+
+    # Most complete signature
+    try:
+        binding_api.Bind(material, s_tok, p_tok)
+        return p, s
+    except Exception:
+        pass
+
+    # Fallback signature(s)
+    try:
+        binding_api.Bind(material, s_tok)
+        return p, s
+    except Exception:
+        pass
+
+    try:
+        binding_api.Bind(material)
+        # If purpose != allPurpose, author direct rel explicitly.
+        if p != "allPurpose":
+            try:
+                rel = binding_api.GetDirectBindingRel(p_tok)
+                if rel:
+                    rel.SetTargets([material.GetPath()])
+                    rel.SetMetadata("bindMaterialAs", s_tok)
+            except Exception:
+                pass
+        return p, s
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Bind failed: {exc}")
+
+
+def _unbind_material_with_options(binding_api, purpose: Optional[str], all_purposes: bool = False) -> dict:
+    from pxr import UsdShade
+
+    if all_purposes:
+        try:
+            binding_api.UnbindAllBindings()
+            return {"ok": True, "all_purposes": True}
+        except Exception:
+            # Fallback: clear known direct binding rels
+            for pn in ("allPurpose", "preview", "full"):
+                try:
+                    tok = _usdshade_token(UsdShade.Tokens, pn)
+                    rel = binding_api.GetDirectBindingRel(tok) if pn != "allPurpose" else binding_api.GetDirectBindingRel()
+                    if rel:
+                        rel.SetTargets([])
+                except Exception:
+                    pass
+            return {"ok": True, "all_purposes": True}
+
+    p = _purpose_to_token_name(purpose)
+    p_tok = _usdshade_token(UsdShade.Tokens, p)
+
+    try:
+        if p == "allPurpose":
+            binding_api.UnbindDirectBinding()
+        else:
+            binding_api.UnbindDirectBinding(p_tok)
+        return {"ok": True, "purpose": p}
+    except Exception:
+        # Fallback: clear relation targets
+        try:
+            rel = binding_api.GetDirectBindingRel(p_tok) if p != "allPurpose" else binding_api.GetDirectBindingRel()
+            if rel:
+                rel.SetTargets([])
+            return {"ok": True, "purpose": p}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unbind failed: {exc}")
+
+
 @app.get("/api/material/{prim_path:path}")
 async def prim_material(prim_path: str, time: Optional[float] = None):
     """Get material binding + shader summary + editable UsdPreviewSurface params."""
@@ -1619,7 +1769,7 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
         return {"bound": False}
 
     binding = UsdShade.MaterialBindingAPI(prim)
-    mat, _ = binding.ComputeBoundMaterial()
+    mat, rel = binding.ComputeBoundMaterial()
     if not mat:
         return {
             "bound": False,
@@ -1629,9 +1779,57 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
                 "materialx": True,
                 "vendor_shaders": True,
             },
+            "binding": {
+                "isDirect": False,
+                "purpose": "allPurpose",
+                "strength": None,
+                "relation": None,
+                "direct": {},
+            },
         }
 
     mat_path = str(mat.GetPath())
+    binding_info = {
+        "isDirect": False,
+        "purpose": "allPurpose",
+        "strength": None,
+        "relation": str(rel.GetPath()) if rel else None,
+        "direct": {},
+    }
+
+    try:
+        if rel:
+            rel_name = rel.GetName()
+            if rel_name.endswith(":preview"):
+                binding_info["purpose"] = "preview"
+            elif rel_name.endswith(":full"):
+                binding_info["purpose"] = "full"
+
+            st = rel.GetMetadata("bindMaterialAs")
+            if st is not None:
+                binding_info["strength"] = str(st)
+
+            binding_info["isDirect"] = str(rel.GetPrim().GetPath()) == full_path
+    except Exception:
+        pass
+
+    for pn in ("allPurpose", "preview", "full"):
+        try:
+            tok = _usdshade_token(UsdShade.Tokens, pn)
+            drel = binding.GetDirectBindingRel(tok) if pn != "allPurpose" else binding.GetDirectBindingRel()
+            if not drel:
+                continue
+            targets = drel.GetTargets()
+            if not targets:
+                continue
+            entry = {"materialPath": str(targets[0])}
+            bst = drel.GetMetadata("bindMaterialAs")
+            if bst is not None:
+                entry["strength"] = str(bst)
+            binding_info["direct"][pn] = entry
+        except Exception:
+            continue
+
     result = {
         "bound": True,
         "primPath": full_path,
@@ -1641,6 +1839,7 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
         "textures": {},
         "shaderIds": [],
         "editablePreviewSurface": False,
+        "binding": binding_info,
     }
 
     preview_shader = None
@@ -1693,6 +1892,8 @@ class _MatBindReq(BaseModel):
     create_if_missing: bool = True
     material_name: Optional[str] = None
     looks_scope: str = "/World/Looks"
+    purpose: str = "allPurpose"
+    binding_strength: str = "weakerThanDescendants"
 
 
 @app.post("/api/material/bind")
@@ -1740,9 +1941,16 @@ async def material_bind(req: _MatBindReq):
         raise HTTPException(status_code=400, detail="Failed to resolve or create material")
 
     try:
-        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+        binding_api = UsdShade.MaterialBindingAPI.Apply(prim)
     except Exception:
-        UsdShade.MaterialBindingAPI(prim).Bind(mat)
+        binding_api = UsdShade.MaterialBindingAPI(prim)
+
+    purpose, strength = _bind_material_with_options(
+        binding_api,
+        mat,
+        req.purpose,
+        req.binding_strength,
+    )
 
     await _conns.broadcast({
         "event": "material_changed",
@@ -1750,12 +1958,61 @@ async def material_bind(req: _MatBindReq):
         "materialPath": str(mat.GetPath()),
         "bind": True,
         "created": created,
+        "purpose": purpose,
+        "binding_strength": strength,
     })
     return {
         "ok": True,
         "created": created,
         "primPath": prim_path,
         "materialPath": str(mat.GetPath()),
+        "purpose": purpose,
+        "binding_strength": strength,
+    }
+
+
+class _MatUnbindReq(BaseModel):
+    prim_path: str
+    purpose: str = "allPurpose"
+    all_purposes: bool = False
+
+
+@app.post("/api/material/unbind")
+async def material_unbind(req: _MatUnbindReq):
+    """Remove direct material binding opinions on a prim."""
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    prim_path = "/" + req.prim_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {prim_path}")
+
+    _pxr_push_undo()
+
+    try:
+        binding_api = UsdShade.MaterialBindingAPI.Apply(prim)
+    except Exception:
+        binding_api = UsdShade.MaterialBindingAPI(prim)
+
+    out = _unbind_material_with_options(binding_api, req.purpose, req.all_purposes)
+
+    await _conns.broadcast({
+        "event": "material_changed",
+        "primPath": prim_path,
+        "unbind": True,
+        "purpose": out.get("purpose", req.purpose),
+        "all_purposes": bool(req.all_purposes),
+    })
+
+    return {
+        "ok": True,
+        "primPath": prim_path,
+        "purpose": out.get("purpose", req.purpose),
+        "all_purposes": bool(req.all_purposes),
     }
 
 

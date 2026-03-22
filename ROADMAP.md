@@ -81,6 +81,7 @@
 - [ ] Stage diff minimal via WebSocket : envoyer uniquement les deltas (pas full reload)
 - [ ] Lazy loading de la hiérarchie (traversée incrémentale `/api/prims?path=...` déjà en place)
 - [x] Auteur non-destructif en pxr mode: edit target vers layer d'overrides sidecar (`*.opendcc_edits.usda`)
+- [x] Export d'overrides via bouton/API `Save Edits As…`
 
 ### 3.3 — Modes de rendu
 - [ ] Toggle wireframe / solid / shaded
@@ -99,6 +100,7 @@
 - [x] Édition des paramètres `UsdPreviewSurface` (color, metallic, roughness, opacity)
 - [x] Entrée des textures (slots principaux) + connexion/déconnexion `UsdUVTexture`
 - [x] Création + binding rapide d’un matériau sur prim sans matériau
+- [x] Unbind explicite sur prim + options de binding purpose/strength
 - [x] Preview matériau temps réel dans le viewport
 
 ### 4.2 — UV Editor web (remplace `opendcc.usd_editor.uv_editor`)
