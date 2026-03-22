@@ -881,6 +881,123 @@ import { ThreeRenderDelegateInterface }
     _aliasNodeParam(node, 'emissiveColor', 'emission_color');
   }
 
+  function _sanitizeAssetToken(rawPath) {
+    return String(rawPath || '')
+      .trim()
+      .replace(/^@+|@+$/g, '')
+      .replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '')
+      .replace(/^\.\//, '')
+      .replace(/^\//, '')
+      .replace(/\\/g, '/');
+  }
+
+  function _extractTexturePath(entry) {
+    var texRe = /\.(png|jpg|jpeg|tga|exr|hdr|tx|bmp|tif|tiff|webp)$/i;
+    var visited = new Set();
+    var cur = entry;
+
+    for (var depth = 0; depth < 24; depth++) {
+      if (!cur) break;
+
+      if (typeof cur === 'string') {
+        var s0 = _sanitizeAssetToken(cur);
+        if (texRe.test(s0)) return s0;
+        break;
+      }
+
+      if (typeof cur !== 'object') break;
+      if (visited.has(cur)) break;
+      visited.add(cur);
+
+      if (typeof cur.resolvedPath === 'string') {
+        var s1 = _sanitizeAssetToken(cur.resolvedPath);
+        if (texRe.test(s1)) return s1;
+      }
+      if (typeof cur.value === 'string') {
+        var s2 = _sanitizeAssetToken(cur.value);
+        if (texRe.test(s2)) return s2;
+      }
+      if (typeof cur.file === 'string') {
+        var s3 = _sanitizeAssetToken(cur.file);
+        if (texRe.test(s3)) return s3;
+      }
+      if (cur.file && typeof cur.file === 'object') {
+        if (typeof cur.file.resolvedPath === 'string') {
+          var s4 = _sanitizeAssetToken(cur.file.resolvedPath);
+          if (texRe.test(s4)) return s4;
+        }
+        if (typeof cur.file.value === 'string') {
+          var s5 = _sanitizeAssetToken(cur.file.value);
+          if (texRe.test(s5)) return s5;
+        }
+        if (cur.file.nodeIn) {
+          cur = cur.file.nodeIn;
+          continue;
+        }
+      }
+
+      if (cur.nodeIn) {
+        cur = cur.nodeIn;
+        continue;
+      }
+
+      var next = null;
+      for (var k in cur) {
+        if (!Object.prototype.hasOwnProperty.call(cur, k)) continue;
+        var v = cur[k];
+        if (!v || typeof v !== 'object') continue;
+        if (v.nodeIn || v.file || typeof v.value === 'string' || typeof v.resolvedPath === 'string') {
+          next = v;
+          break;
+        }
+      }
+
+      if (next) {
+        cur = next;
+        continue;
+      }
+      break;
+    }
+
+    return null;
+  }
+
+  function _applyMaterialXTextureFallback(material, mainNode, iface) {
+    try {
+      if (!material || !mainNode || !iface || !iface.registry) return;
+      var reg = iface.registry;
+
+      function _assignMap(path, apply) {
+        if (!path) return;
+        reg.getTexture(path).then(function(tex) {
+          try { apply(tex); material.needsUpdate = true; } catch (_) {}
+        }).catch(function() {});
+      }
+
+      var cPath = _extractTexturePath(mainNode.base_color || mainNode.diffuseColor);
+      _assignMap(cPath, function(tex) {
+        material.map = tex;
+        if (material.color) material.color.setHex(0xffffff);
+      });
+
+      var nPath = _extractTexturePath(mainNode.normal);
+      _assignMap(nPath, function(tex) {
+        material.normalMap = tex;
+        if (!material.normalScale) material.normalScale = new THREE.Vector2(1, 1);
+      });
+
+      var rPath = _extractTexturePath(mainNode.specular_roughness || mainNode.roughness);
+      _assignMap(rPath, function(tex) {
+        material.roughnessMap = tex;
+      });
+
+      var mPath = _extractTexturePath(mainNode.metalness || mainNode.metallic);
+      _assignMap(mPath, function(tex) {
+        material.metalnessMap = tex;
+      });
+    } catch (_) {}
+  }
+
   try {
     var proto = ThreeRenderDelegateInterface && ThreeRenderDelegateInterface.prototype;
     if (!proto || typeof proto.createRPrim !== 'function') return;
@@ -952,38 +1069,43 @@ import { ThreeRenderDelegateInterface }
 
               var out = await _origUpdateFinished.call(this, type, relationships);
 
+              var mainNode = null;
+              try {
+                if (this._nodes) {
+                  mainNode = Object.values(this._nodes).find(function(n) {
+                    return !!(n && (n.base_color || n.diffuseColor));
+                  }) || null;
+                }
+              } catch (_) {
+                mainNode = null;
+              }
+
+              // Try texture hookup even when delegate produced a non-default material.
+              try {
+                if (mainNode && this._material) {
+                  _applyMaterialXTextureFallback(this._material, mainNode, this._interface);
+                }
+              } catch (_) {}
+
               // Last resort fallback: build a neutral PBR from base_color if
               // delegate still ended on DefaultMaterial.
               try {
-                if (this._material && this._material.name === 'DefaultMaterial' && this._nodes) {
-                  var main = Object.values(this._nodes).find(function(n) {
-                    return !!(n && (n.base_color || n.diffuseColor));
+                if (this._material && this._material.name === 'DefaultMaterial' && mainNode) {
+                  var m = new THREE.MeshPhysicalMaterial({
+                    side: THREE.DoubleSide,
+                    color: new THREE.Color(0x888888),
+                    roughness: 0.6,
+                    metalness: 0.0,
+                    name: (this._id || 'MaterialX') + '_fallback',
                   });
-                  if (main) {
-                    var m = new THREE.MeshPhysicalMaterial({
-                      side: THREE.DoubleSide,
-                      color: new THREE.Color(0x888888),
-                      roughness: 0.6,
-                      metalness: 0.0,
-                      name: (this._id || 'MaterialX') + '_fallback',
-                    });
 
-                    var c = main.base_color || main.diffuseColor;
-                    if (Array.isArray(c) && c.length >= 3) {
-                      m.color = new THREE.Color().fromArray(c);
-                    }
-
-                    if (c && c.nodeIn && c.nodeIn.resolvedPath && this._interface && this._interface.registry) {
-                      var texFile = String(c.nodeIn.resolvedPath).replace('./', '');
-                      this._interface.registry.getTexture(texFile).then(function(tex) {
-                        m.map = tex;
-                        m.color.setHex(0xffffff);
-                        m.needsUpdate = true;
-                      }).catch(function() {});
-                    }
-
-                    this._material = m;
+                  var c = mainNode.base_color || mainNode.diffuseColor;
+                  if (Array.isArray(c) && c.length >= 3) {
+                    m.color = new THREE.Color().fromArray(c);
                   }
+
+                  _applyMaterialXTextureFallback(m, mainNode, this._interface);
+                  this._material = m;
                 }
               } catch (_) {}
 
