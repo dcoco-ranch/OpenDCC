@@ -407,6 +407,11 @@
     <button onclick="setViewPreset('top')" title="Top view (7)">T</button>
     <button onclick="setViewPreset('persp')" title="Perspective (5)">P</button>
     <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
+    <button id="vp-layout-1" onclick="setViewportLayoutPreset(1)" title="Single viewport">1V</button>
+    <button id="vp-layout-2" onclick="setViewportLayoutPreset(2)" title="Two viewports">2V</button>
+    <button id="vp-layout-3" onclick="setViewportLayoutPreset(3)" title="Three viewports">3V</button>
+    <button id="vp-layout-4" onclick="setViewportLayoutPreset(4)" title="Four viewports">4V</button>
+    <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
     <button id="btn-snapshot" onclick="takeSnapshot()" title="Server-side GPU render (PNG)" style="display:none">📷 Snapshot</button>
   </div>
 
@@ -589,6 +594,146 @@ controls.enableDamping      = true;
 controls.dampingFactor      = 0.08;
 controls.screenSpacePanning = true;
 
+// ── Multi-viewport presets (1/2/3/4 panels) ───────────────────────────
+const camFront = new THREE.PerspectiveCamera(27, 1, 0.01, 100000);
+const camRight = new THREE.PerspectiveCamera(27, 1, 0.01, 100000);
+const camTop   = new THREE.PerspectiveCamera(27, 1, 0.01, 100000);
+
+let _viewportPreset = 1;
+let _viewportWidth = 1;
+let _viewportHeight = 1;
+let _viewRects = [];
+
+function _syncAuxCamera(cam, dir, up) {
+  const target = controls.target;
+  const dist = Math.max(0.001, camera.position.distanceTo(target));
+  cam.position.copy(target).addScaledVector(dir, dist);
+  cam.up.copy(up);
+  cam.fov = camera.fov;
+  cam.near = camera.near;
+  cam.far = camera.far;
+  cam.lookAt(target);
+}
+
+function _syncAuxCameras() {
+  _syncAuxCamera(camFront, new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));
+  _syncAuxCamera(camRight, new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
+  _syncAuxCamera(camTop,   new THREE.Vector3(0, 1, 0.0001), new THREE.Vector3(0, 0, -1));
+}
+
+function _makeView(x, y, w, h, cam, key) {
+  return { x, y, w, h, cam, key };
+}
+
+function _buildViewRects() {
+  const w = _viewportWidth;
+  const h = _viewportHeight;
+  if (w <= 0 || h <= 0) return [];
+
+  if (_viewportPreset === 2) {
+    const half = Math.floor(w * 0.5);
+    return [
+      _makeView(0, 0, half, h, camera, 'persp'),
+      _makeView(half, 0, w - half, h, camTop, 'top'),
+    ];
+  }
+
+  if (_viewportPreset === 3) {
+    const leftW = Math.floor(w * 0.66);
+    const rightW = w - leftW;
+    const halfH = Math.floor(h * 0.5);
+    return [
+      _makeView(0, 0, leftW, h, camera, 'persp'),
+      _makeView(leftW, 0, rightW, halfH, camTop, 'top'),
+      _makeView(leftW, halfH, rightW, h - halfH, camFront, 'front'),
+    ];
+  }
+
+  if (_viewportPreset === 4) {
+    const halfW = Math.floor(w * 0.5);
+    const halfH = Math.floor(h * 0.5);
+    return [
+      _makeView(0, 0, halfW, halfH, camera, 'persp'),
+      _makeView(halfW, 0, w - halfW, halfH, camTop, 'top'),
+      _makeView(0, halfH, halfW, h - halfH, camFront, 'front'),
+      _makeView(halfW, halfH, w - halfW, h - halfH, camRight, 'right'),
+    ];
+  }
+
+  return [ _makeView(0, 0, w, h, camera, 'persp') ];
+}
+
+function _updateViewportPresetButtons() {
+  [1,2,3,4].forEach(n => {
+    const btn = document.getElementById('vp-layout-' + n);
+    if (btn) btn.classList.toggle('primary', n === _viewportPreset);
+  });
+}
+
+function setViewportLayoutPreset(preset) {
+  const p = Number(preset);
+  _viewportPreset = (p >= 1 && p <= 4) ? p : 1;
+  _viewRects = _buildViewRects();
+  _updateViewportPresetButtons();
+  window._viewportPreset = _viewportPreset;
+}
+window.setViewportLayoutPreset = setViewportLayoutPreset;
+
+function _findViewAtClientPoint(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+  for (let i = 0; i < _viewRects.length; i++) {
+    const v = _viewRects[i];
+    if (px >= v.x && px <= v.x + v.w && py >= v.y && py <= v.y + v.h) {
+      return { view: v, px, py };
+    }
+  }
+  return null;
+}
+
+function _renderViewports() {
+  _syncAuxCameras();
+  _viewRects = _buildViewRects();
+
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, _viewportWidth, _viewportHeight);
+  renderer.clear(true, true, true);
+
+  if (_viewRects.length <= 1) {
+    camera.aspect = Math.max(0.0001, _viewportWidth / Math.max(1, _viewportHeight));
+    camera.updateProjectionMatrix();
+    renderer.render(scene, camera);
+    return;
+  }
+
+  renderer.setScissorTest(true);
+  for (const v of _viewRects) {
+    const rx = Math.floor(v.x);
+    const ry = Math.floor(_viewportHeight - v.y - v.h);
+    const rw = Math.max(1, Math.floor(v.w));
+    const rh = Math.max(1, Math.floor(v.h));
+
+    renderer.setViewport(rx, ry, rw, rh);
+    renderer.setScissor(rx, ry, rw, rh);
+    v.cam.aspect = rw / Math.max(1, rh);
+    v.cam.updateProjectionMatrix();
+    renderer.render(scene, v.cam);
+  }
+  renderer.setScissorTest(false);
+}
+
+window._getPickContextAtClientPoint = function(clientX, clientY) {
+  const found = _findViewAtClientPoint(clientX, clientY);
+  if (!found) return null;
+  const v = found.view;
+  const nx = ((found.px - v.x) / Math.max(1, v.w)) * 2 - 1;
+  const ny = -((found.py - v.y) / Math.max(1, v.h)) * 2 + 1;
+  return { camera: v.cam, ndcX: nx, ndcY: ny, key: v.key };
+};
+
+setViewportLayoutPreset(1);
+
 // ── Transform Gizmo ──────────────────────────────────────────────────────
 const gizmo = new TransformControls(camera, renderer.domElement);
 gizmo.setSize(0.75);
@@ -701,8 +846,9 @@ function resizeViewport() {
   // This ensures correct rendering on Retina displays (devicePixelRatio > 1)
   // across all browsers (Firefox macOS had offset issues with setSize(w,h,false))
   renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  _viewportWidth = w;
+  _viewportHeight = h;
+  _viewRects = _buildViewRects();
 }
 new ResizeObserver(resizeViewport).observe(vpWrap);
 resizeViewport();
@@ -1157,7 +1303,7 @@ function animate() {
   // Update selection highlight box to follow the object
   if (_selBox.visible) _selBox.update();
 
-  renderer.render(scene, camera);
+  _renderViewports();
 
   _frameCount++;
   if (now - _lastFpsTs >= 1000) {
@@ -1257,11 +1403,20 @@ function initViewportPicking() {
 
     if (Math.abs(ev.clientX - _downX) > 5 || Math.abs(ev.clientY - _downY) > 5) return;
 
-    var rect = canvas.getBoundingClientRect();
-    mouse.x =  ((ev.clientX - rect.left) / rect.width)  * 2 - 1;
-    mouse.y = -((ev.clientY - rect.top)  / rect.height) * 2 + 1;
+    var pickCtx = (typeof window._getPickContextAtClientPoint === 'function')
+      ? window._getPickContextAtClientPoint(ev.clientX, ev.clientY)
+      : null;
 
-    var cam = window._threeCamera;
+    if (pickCtx) {
+      mouse.x = pickCtx.ndcX;
+      mouse.y = pickCtx.ndcY;
+    } else {
+      var rect = canvas.getBoundingClientRect();
+      mouse.x =  ((ev.clientX - rect.left) / rect.width)  * 2 - 1;
+      mouse.y = -((ev.clientY - rect.top)  / rect.height) * 2 + 1;
+    }
+
+    var cam = (pickCtx && pickCtx.camera) ? pickCtx.camera : window._threeCamera;
     var usdRoot = window._usdRoot;
     if (!cam || !usdRoot) { console.log('[pick] no cam/root'); return; }
 

@@ -85,6 +85,7 @@
 - [ ] Toggle wireframe / solid / shaded
 - [ ] Toggle grid, axes helper
 - [ ] Boutons de vue : Front, Back, Left, Right, Top, Bottom, Perspective
+- [x] Presets de panneaux viewport 3D : 1V / 2V / 3V / 4V
 - [ ] Stats overlay configurable (tris, draw calls, fps)
 
 ---

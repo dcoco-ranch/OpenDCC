@@ -16,6 +16,8 @@ Branch: `develop`
 - Play/pause + step + fps input.
 - Time-sampled server queries synced with timeline.
 - Curve Editor in separate panel (not in Properties).
+- Resizable layout splitters + persisted panel sizes.
+- Viewport panel presets: 1V / 2V / 3V / 4V (multi-camera scissor render).
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key
@@ -32,12 +34,11 @@ Branch: `develop`
 - Status bar timeline at bottom
 
 ## Pending work (high priority)
-1. Resizable panes (width/height) + persistent sizes
-   - left/right width drag handles
-   - curve panel height drag handle
-2. Viewport panel presets (1/2/3/4) for 3D view area
-3. Roadmap cleanup (Phase 3/4 items are stale and partially already done)
-4. Production hardening:
+1. Viewport panel presets (1/2/3/4) interaction polish
+   - currently render/picking works in all panels
+   - orbit/transform control still driven by main perspective camera
+2. Roadmap cleanup (Phase 3/4 items are stale and partially already done)
+3. Production hardening:
    - tests for new keyframe/interp endpoints
    - UX polish for curve editor interactions.
 
