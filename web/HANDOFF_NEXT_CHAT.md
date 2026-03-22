@@ -4,12 +4,12 @@ Date: 2026-03-22
 Branch: `develop`
 
 ## Latest commits (newest first)
+- `16edbf2` perf(stage): speed Kitchen_set reload via used-layer preload and synthetic root
 - `13c8d28` fix(material): resolve computed bindings for preview/full purposes
 - `35af392` feat(material): add unbind, purpose/strength binding, and save-edits-as export
 - `e0a2e2c` perf(material): avoid full viewport reload on shader parameter changes
 - `05a7738` feat(usd-layering): author pxr edits in sidecar layer and scope material preview
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
-- `20ade4a` docs(handoff): include material bind+texture milestone commit
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
@@ -35,6 +35,9 @@ Branch: `develop`
   - root imported stage remains untouched
   - `/api/stage/save` saves edit layer (not root) in this mode
   - `Save Edits As…` UI + `/api/stage/save_edits_as` for clean overrides export
+  - WASM reload speed-up: `/api/stage/assets` now uses `GetUsedLayers()` and frontend builds a synthetic root in edit-layer mode (avoids expensive flatten reloads)
+- Console hygiene:
+  - filters repetitive HdEmscripten warning `Unsupported interpolation type 'uniform' for primvar __faceindex`
 - Basic keyframe editing API + UI:
   - add key @ current
   - delete selected key
