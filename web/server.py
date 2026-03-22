@@ -2081,6 +2081,29 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
     return result
 
 
+@app.get("/api/material_proxy/{mat_path:path}")
+async def material_proxy(mat_path: str):
+    """Extract a viewport-friendly texture proxy from MaterialX/UsdShade graph."""
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    full = "/" + mat_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(full))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Material not found: {full}")
+
+    mat = UsdShade.Material(prim)
+    if not mat:
+        raise HTTPException(status_code=400, detail="Path is not a UsdShade material")
+
+    proxy = _extract_materialx_proxy(stage, mat)
+    proxy["materialPath"] = full
+    return proxy
+
+
 def _compute_bound_material(binding_api):
     """Resolve computed bound material with purpose fallback.
 
@@ -2109,6 +2132,259 @@ def _compute_bound_material(binding_api):
                 continue
 
     return mat, rel, purpose
+
+
+def _sanitize_asset_token(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if s.startswith("@") and s.endswith("@"):
+        s = s[1:-1]
+    s = re.sub(r":SDF_FORMAT_ARGS:[^?#]+", "", s, flags=re.IGNORECASE)
+    s = s.replace("\\", "/")
+    while s.startswith("./"):
+        s = s[2:]
+    if s.startswith("/"):
+        s = s[1:]
+    return s
+
+
+def _asset_value_to_string(v: Any) -> str:
+    try:
+        if hasattr(v, "path"):
+            return str(v.path)
+    except Exception:
+        pass
+    return str(v)
+
+
+def _resolve_texture_rel_path(stage, stage_dir: Optional[str], token: str) -> Optional[str]:
+    import os
+
+    t = _sanitize_asset_token(token)
+    if not t:
+        return None
+
+    if not stage_dir:
+        return t
+
+    stage_dir_norm = os.path.normpath(stage_dir)
+
+    # 1) direct under stage dir
+    cand = os.path.normpath(os.path.join(stage_dir_norm, t))
+    if cand.startswith(stage_dir_norm) and os.path.exists(cand):
+        return os.path.relpath(cand, stage_dir_norm).replace("\\", "/")
+
+    # 2) relative to used .mtlx layer directories
+    try:
+        for layer in stage.GetUsedLayers():
+            lp = layer.realPath or ""
+            if not lp or not lp.lower().endswith(".mtlx"):
+                continue
+            base = os.path.dirname(lp)
+            c2 = os.path.normpath(os.path.join(base, t))
+            if c2.startswith(stage_dir_norm) and os.path.exists(c2):
+                return os.path.relpath(c2, stage_dir_norm).replace("\\", "/")
+    except Exception:
+        pass
+
+    # 3) basename fallback search in stage dir (prefer /tex/)
+    bn = os.path.basename(t).lower()
+    if not bn:
+        return None
+
+    best = None
+    best_key = None
+    for dirpath, _dirs, files in os.walk(stage_dir_norm):
+        for f in files:
+            if f.lower() != bn:
+                continue
+            full = os.path.join(dirpath, f)
+            if not os.path.normpath(full).startswith(stage_dir_norm):
+                continue
+            rel = os.path.relpath(full, stage_dir_norm).replace("\\", "/")
+            key = (0 if "/tex/" in rel.lower() else 1, len(rel), rel)
+            if best_key is None or key < best_key:
+                best_key = key
+                best = rel
+
+    return best
+
+
+def _resolve_texture_from_source_prim(source_prim, source_output_name: str, visited: set[tuple[str, str]]) -> Optional[str]:
+    from pxr import UsdShade
+
+    if not source_prim or not source_prim.IsValid():
+        return None
+
+    key = (str(source_prim.GetPath()), str(source_output_name or ""))
+    if key in visited:
+        return None
+    visited.add(key)
+
+    # Shader case
+    shader = UsdShade.Shader(source_prim)
+    if shader:
+        sid = ""
+        try:
+            sidv = shader.GetIdAttr().Get() if shader.GetIdAttr() else None
+            sid = str(sidv or "")
+        except Exception:
+            sid = ""
+
+        sid_l = sid.lower()
+        if sid_l.startswith("nd_image"):
+            fin = shader.GetInput("file")
+            if fin:
+                try:
+                    vv = fin.Get()
+                    if vv is not None:
+                        return _asset_value_to_string(vv)
+                except Exception:
+                    pass
+
+        for nm in ("in", "input", "normal", "tex", "file"):
+            inp = shader.GetInput(nm)
+            if not inp:
+                continue
+            try:
+                src = inp.GetConnectedSource()
+            except Exception:
+                src = None
+            if not src:
+                continue
+            try:
+                src_api, src_name, _st = src
+                sp = src_api.GetPrim()
+                r = _resolve_texture_from_source_prim(sp, str(src_name), visited)
+                if r:
+                    return r
+            except Exception:
+                continue
+
+        # Generic fallback: walk any connected input
+        try:
+            for inp in shader.GetInputs():
+                try:
+                    src = inp.GetConnectedSource()
+                except Exception:
+                    src = None
+                if not src:
+                    continue
+                try:
+                    src_api, src_name, _st = src
+                    sp = src_api.GetPrim()
+                    r = _resolve_texture_from_source_prim(sp, str(src_name), visited)
+                    if r:
+                        return r
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # NodeGraph case: trace output to source
+    ng = UsdShade.NodeGraph(source_prim)
+    if ng:
+        out = None
+        try:
+            out = ng.GetOutput(str(source_output_name or ""))
+        except Exception:
+            out = None
+
+        if not out:
+            try:
+                for o in ng.GetOutputs():
+                    if o.GetBaseName() == str(source_output_name or ""):
+                        out = o
+                        break
+            except Exception:
+                out = None
+
+        if out:
+            try:
+                src = out.GetConnectedSource()
+            except Exception:
+                src = None
+            if src:
+                try:
+                    src_api, src_name, _st = src
+                    sp = src_api.GetPrim()
+                    return _resolve_texture_from_source_prim(sp, str(src_name), visited)
+                except Exception:
+                    pass
+
+    return None
+
+
+def _extract_materialx_proxy(stage, mat) -> dict[str, Any]:
+    from pxr import UsdShade, Usd
+
+    stage_dir = None
+    try:
+        rp = stage.GetRootLayer().realPath
+        if rp:
+            stage_dir = os.path.dirname(rp)
+    except Exception:
+        stage_dir = None
+
+    main_shader = None
+    for p in Usd.PrimRange(mat.GetPrim()):
+        sh = UsdShade.Shader(p)
+        if not sh:
+            continue
+        sid = None
+        try:
+            sid = sh.GetIdAttr().Get() if sh.GetIdAttr() else None
+        except Exception:
+            sid = None
+        if sid and "nd_standard_surface" in str(sid).lower():
+            main_shader = sh
+            break
+
+    if not main_shader:
+        return {"ok": True, "textures": {}}
+
+    def _resolve_from_input(inp_name: str) -> Optional[str]:
+        inp = main_shader.GetInput(inp_name)
+        if not inp:
+            return None
+        try:
+            src = inp.GetConnectedSource()
+        except Exception:
+            src = None
+        if src:
+            try:
+                src_api, src_name, _st = src
+                sp = src_api.GetPrim()
+                tok = _resolve_texture_from_source_prim(sp, str(src_name), set())
+                if tok:
+                    return _resolve_texture_rel_path(stage, stage_dir, tok)
+            except Exception:
+                pass
+        try:
+            vv = inp.Get()
+            if vv is not None:
+                return _resolve_texture_rel_path(stage, stage_dir, _asset_value_to_string(vv))
+        except Exception:
+            pass
+        return None
+
+    tex = {}
+    for out_name, in_names in {
+        "baseColor": ["base_color", "diffuseColor"],
+        "normal": ["normal"],
+        "roughness": ["specular_roughness", "roughness"],
+        "metallic": ["metalness", "metallic"],
+        "emissive": ["emission_color", "emissiveColor"],
+    }.items():
+        for nm in in_names:
+            r = _resolve_from_input(nm)
+            if r:
+                tex[out_name] = r
+                break
+
+    return {
+        "ok": True,
+        "textures": tex,
+    }
 
 
 _NODE_SHADER_LIBRARY = [

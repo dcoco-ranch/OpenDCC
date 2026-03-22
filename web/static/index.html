@@ -848,6 +848,83 @@ import { ThreeRenderDelegateInterface }
     return null;
   }
 
+  var _mtlxProxyCache = new Map();
+  var _proxyTextureLoader = new THREE.TextureLoader();
+
+  function _normalizeMaterialPathId(materialId) {
+    var s = String(materialId || '').trim();
+    if (!s) return s;
+    var i = s.indexOf(':');
+    if (i > 0) s = s.slice(0, i);
+    var j = s.indexOf('@');
+    if (j > 0) s = s.slice(0, j);
+    return s;
+  }
+
+  function _encodePathForApi(pathStr) {
+    return String(pathStr || '').split('/').map(function(seg) { return encodeURIComponent(seg); }).join('/');
+  }
+
+  async function _fetchMaterialProxyFromServer(materialId) {
+    var matPath = _normalizeMaterialPathId(materialId);
+    if (!matPath || !matPath.startsWith('/')) return null;
+
+    if (_mtlxProxyCache.has(matPath)) return _mtlxProxyCache.get(matPath);
+
+    var p = fetch('/api/material_proxy/' + _encodePathForApi(matPath.replace(/^\//, '')), { cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .catch(function() { return null; });
+
+    _mtlxProxyCache.set(matPath, p);
+    return p;
+  }
+
+  function _applyServerProxyToMaterial(material, materialId) {
+    if (!material || !materialId) return;
+    var matPath = _normalizeMaterialPathId(materialId);
+    if (!matPath) return;
+
+    if (material.__opendccProxyAppliedFor === matPath) return;
+    material.__opendccProxyAppliedFor = matPath;
+
+    _fetchMaterialProxyFromServer(matPath).then(function(proxy) {
+      if (!proxy || !proxy.textures) return;
+      var tx = proxy.textures || {};
+
+      function _load(path, cb) {
+        if (!path) return;
+        var u = '/api/stage/asset?path=' + encodeURIComponent(path);
+        _proxyTextureLoader.load(u, function(tex) {
+          try { cb(tex); material.needsUpdate = true; } catch (_) {}
+        }, undefined, function() {});
+      }
+
+      _load(tx.baseColor, function(tex) {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        material.map = tex;
+        if (material.color) material.color.setHex(0xffffff);
+      });
+
+      _load(tx.emissive, function(tex) {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        material.emissiveMap = tex;
+      });
+
+      _load(tx.normal, function(tex) {
+        material.normalMap = tex;
+        if (!material.normalScale) material.normalScale = new THREE.Vector2(1, 1);
+      });
+
+      _load(tx.roughness, function(tex) {
+        material.roughnessMap = tex;
+      });
+
+      _load(tx.metallic, function(tex) {
+        material.metalnessMap = tex;
+      });
+    }).catch(function() {});
+  }
+
   function _patchTextureRegistry(iface) {
     try {
       var reg = iface && iface.registry;
@@ -1094,6 +1171,7 @@ import { ThreeRenderDelegateInterface }
           var resolved = _resolveHydraMaterialInMap(mats, materialId);
           if (resolved && resolved._material && this._mesh) {
             this._mesh.material = resolved._material;
+            _applyServerProxyToMaterial(resolved._material, materialId);
             return;
           }
 
@@ -1106,10 +1184,17 @@ import { ThreeRenderDelegateInterface }
               }
             } catch (_) {}
             this._mesh.material = fallback._material;
+            _applyServerProxyToMaterial(fallback._material, materialId);
             return;
           }
 
-          return _origSetMaterial.call(this, materialId);
+          var out = _origSetMaterial.call(this, materialId);
+          try {
+            if (this._mesh && this._mesh.material) {
+              _applyServerProxyToMaterial(this._mesh.material, materialId);
+            }
+          } catch (_) {}
+          return out;
         };
 
         prim.__opendccMatPatched = true;
