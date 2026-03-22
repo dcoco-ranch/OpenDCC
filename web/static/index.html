@@ -1267,7 +1267,8 @@ function _isFilteredUsdRuntimeLog(msg) {
   return (
     (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) ||
     (msg.indexOf('_FindAndInstantiateDiscoveryPlugins') >= 0 && msg.indexOf('pluginFactory') >= 0) ||
-    (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=usd') >= 0 && msg.indexOf('Cannot determine file format') >= 0)
+    (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=usd') >= 0 && msg.indexOf('Cannot determine file format') >= 0) ||
+    (msg.indexOf('Material not found') >= 0 && msg.indexOf('HydraMaterial') >= 0)
   );
 }
 function _logUsdRuntime(raw, isErr) {
@@ -1649,15 +1650,30 @@ window.THREE          = THREE;
   if (window.__opendccWarnFilterInstalled) return;
   window.__opendccWarnFilterInstalled = true;
 
+  function _isFilteredConsoleMsg(msg) {
+    return (
+      (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) ||
+      (msg.indexOf('.mtlx:SDF_FORMAT_ARGS:target=usd') >= 0 && msg.indexOf('Cannot determine file format') >= 0) ||
+      (msg.indexOf('Material not found') >= 0 && msg.indexOf('HydraMaterial') >= 0)
+    );
+  }
+
   var _warn = console.warn.bind(console);
   console.warn = function() {
     try {
       var msg = Array.prototype.slice.call(arguments).join(' ');
-      if (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) {
-        return;
-      }
+      if (_isFilteredConsoleMsg(msg)) return;
     } catch (_) {}
     return _warn.apply(console, arguments);
+  };
+
+  var _error = console.error.bind(console);
+  console.error = function() {
+    try {
+      var msg = Array.prototype.slice.call(arguments).join(' ');
+      if (_isFilteredConsoleMsg(msg)) return;
+    } catch (_) {}
+    return _error.apply(console, arguments);
   };
 })();
 
