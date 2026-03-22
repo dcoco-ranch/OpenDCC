@@ -43,6 +43,9 @@
       --panel:     #282828;
       --header-h:  38px;
       --toolbar-h: 34px;
+      --left-w:    220px;
+      --right-w:   260px;
+      --splitter-w: 4px;
       --curve-h:   190px;
       --status-h:  28px;
     }
@@ -58,7 +61,7 @@
     #app {
       display: grid;
       grid-template-rows: var(--header-h) var(--toolbar-h) minmax(0, 1fr) 0px var(--status-h);
-      grid-template-columns: 220px 1fr 260px;
+      grid-template-columns: var(--left-w) var(--splitter-w) minmax(0, 1fr) var(--splitter-w) var(--right-w);
       height: 100vh;
     }
     #app.curve-open {
@@ -92,11 +95,27 @@
     #outliner, #properties {
       background: var(--panel); display: flex; flex-direction: column; overflow: hidden; min-height: 0;
     }
-    #outliner  { border-right: 1px solid var(--border); }
-    #properties{ border-left:  1px solid var(--border); }
+    #outliner  { border-right: 1px solid var(--border); grid-column: 1; grid-row: 3; }
+    #viewport-wrap { grid-column: 3; grid-row: 3; }
+    #properties{ border-left:  1px solid var(--border); grid-column: 5; grid-row: 3; }
+
+    .panel-splitter {
+      user-select: none;
+      touch-action: none;
+      background: #2f2f2f;
+      opacity: .9;
+      z-index: 15;
+      transition: background .1s;
+    }
+    .panel-splitter:hover,
+    .panel-splitter.dragging { background: var(--accent); }
+    .panel-splitter.vertical { cursor: col-resize; grid-row: 3; }
+    #splitter-left { grid-column: 2; }
+    #splitter-right { grid-column: 4; }
 
     #curve-editor {
       grid-column: 1 / -1;
+      grid-row: 4;
       background: var(--panel);
       border-top: 1px solid var(--border);
       display: none;
@@ -293,6 +312,7 @@
     /* Status bar */
     #statusbar {
       grid-column: 1 / -1;
+      grid-row: 5;
       display: flex; align-items: center; gap: 10px; padding: 0 10px;
       background: #1a1a1a; border-top: 1px solid var(--border);
       font-size: 10px; color: var(--text2);
@@ -404,6 +424,8 @@
     </div>
   </div>
 
+  <div id="splitter-left" class="panel-splitter vertical" title="Resize outliner width"></div>
+
   <!-- ── Viewport ───────────────────────────────────────────────────────── -->
   <div id="viewport-wrap">
     <!-- Three.js canvas is appended here by the module script -->
@@ -435,6 +457,8 @@
     </div>
   </div>
 
+  <div id="splitter-right" class="panel-splitter vertical" title="Resize properties width"></div>
+
   <!-- ── Properties ─────────────────────────────────────────────────────── -->
   <div id="properties">
     <div class="panel-header">
@@ -454,6 +478,7 @@
     <div class="panel-header">
       <span>Curve Editor</span>
       <div style="display:flex;gap:6px;align-items:center">
+        <span id="curve-resize-grip" title="Resize curve panel" style="cursor:ns-resize;color:var(--text2);font-size:12px;padding:0 4px;user-select:none">↕</span>
         <button style="padding:1px 6px;font-size:10px" onclick="refreshCurvePanel()" title="Refresh curves">↻</button>
         <button style="padding:1px 6px;font-size:10px" onclick="toggleCurvePanel(false)" title="Hide curve panel">✕</button>
       </div>
@@ -1607,8 +1632,140 @@ function showContextMenu(x, y, path) {
 function closeContextMenu() { var m = document.getElementById('ctx-menu-active'); if (m) m.remove();
   var dd = document.getElementById('create-dropdown'); if (dd) dd.classList.remove('open'); }
 
-// ── Panel toggles ─────────────────────────────────────────────────────────
+// ── Panel toggles / layout splitters ─────────────────────────────────────
 window._curvePanelOpen = false;
+
+function _clamp(val, min, max) {
+  return Math.max(min, Math.min(max, val));
+}
+
+function _setCssVar(name, value) {
+  document.documentElement.style.setProperty(name, value);
+}
+
+function _getCssPx(name, fallback) {
+  var raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  var v = parseFloat(raw);
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function _persistLayoutSizes() {
+  try {
+    localStorage.setItem('opendcc.layout.left_w', String(_getCssPx('--left-w', 220)));
+    localStorage.setItem('opendcc.layout.right_w', String(_getCssPx('--right-w', 260)));
+    localStorage.setItem('opendcc.layout.curve_h', String(_getCssPx('--curve-h', 190)));
+  } catch (_) {}
+}
+
+function _applyPersistedLayoutSizes() {
+  try {
+    var lw = parseFloat(localStorage.getItem('opendcc.layout.left_w') || '');
+    var rw = parseFloat(localStorage.getItem('opendcc.layout.right_w') || '');
+    var ch = parseFloat(localStorage.getItem('opendcc.layout.curve_h') || '');
+    if (Number.isFinite(lw)) _setCssVar('--left-w', _clamp(lw, 160, 520) + 'px');
+    if (Number.isFinite(rw)) _setCssVar('--right-w', _clamp(rw, 180, 620) + 'px');
+    if (Number.isFinite(ch)) _setCssVar('--curve-h', _clamp(ch, 120, 420) + 'px');
+  } catch (_) {}
+}
+
+function _clampPanelWidths() {
+  var app = document.getElementById('app');
+  if (!app) return;
+
+  var rect = app.getBoundingClientRect();
+  var total = rect.width;
+  var split = _getCssPx('--splitter-w', 4) * 2;
+  var centerMin = 360;
+
+  var left = _getCssPx('--left-w', 220);
+  var right = _getCssPx('--right-w', 260);
+
+  var leftMax = Math.max(160, total - right - split - centerMin);
+  left = _clamp(left, 160, leftMax);
+
+  var rightMax = Math.max(180, total - left - split - centerMin);
+  right = _clamp(right, 180, rightMax);
+
+  _setCssVar('--left-w', left + 'px');
+  _setCssVar('--right-w', right + 'px');
+}
+
+function initPanelSplitters() {
+  _applyPersistedLayoutSizes();
+  _clampPanelWidths();
+
+  var app = document.getElementById('app');
+  var splitLeft = document.getElementById('splitter-left');
+  var splitRight = document.getElementById('splitter-right');
+  var curveGrip = document.getElementById('curve-resize-grip');
+  if (!app || !splitLeft || !splitRight) return;
+
+  var drag = null;
+
+  function stopDrag() {
+    if (!drag) return;
+    if (drag.el) drag.el.classList.remove('dragging');
+    drag = null;
+    _persistLayoutSizes();
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    var appRect = app.getBoundingClientRect();
+    var total = appRect.width;
+    var split = _getCssPx('--splitter-w', 4) * 2;
+    var centerMin = 360;
+
+    if (drag.type === 'left') {
+      var x = _clamp(e.clientX - appRect.left, 0, total);
+      var right = _getCssPx('--right-w', 260);
+      var maxLeft = Math.max(160, total - right - split - centerMin);
+      _setCssVar('--left-w', _clamp(x, 160, maxLeft) + 'px');
+    } else if (drag.type === 'right') {
+      var rightW = _clamp(appRect.right - e.clientX, 0, total);
+      var left = _getCssPx('--left-w', 220);
+      var maxRight = Math.max(180, total - left - split - centerMin);
+      _setCssVar('--right-w', _clamp(rightW, 180, maxRight) + 'px');
+    } else if (drag.type === 'curve') {
+      var dy = drag.startY - e.clientY;
+      var next = _clamp(drag.startCurve + dy, 120, 420);
+      _setCssVar('--curve-h', next + 'px');
+    }
+  }
+
+  function beginDrag(type, el, e) {
+    e.preventDefault();
+    drag = {
+      type: type,
+      el: el,
+      startY: e.clientY,
+      startCurve: _getCssPx('--curve-h', 190),
+    };
+    if (el) el.classList.add('dragging');
+  }
+
+  splitLeft.addEventListener('pointerdown', function(e) { beginDrag('left', splitLeft, e); });
+  splitRight.addEventListener('pointerdown', function(e) { beginDrag('right', splitRight, e); });
+  if (curveGrip) curveGrip.addEventListener('pointerdown', function(e) { beginDrag('curve', curveGrip, e); });
+
+  splitLeft.addEventListener('dblclick', function() {
+    _setCssVar('--left-w', '220px');
+    _clampPanelWidths();
+    _persistLayoutSizes();
+  });
+  splitRight.addEventListener('dblclick', function() {
+    _setCssVar('--right-w', '260px');
+    _clampPanelWidths();
+    _persistLayoutSizes();
+  });
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', stopDrag);
+  window.addEventListener('resize', function() {
+    _clampPanelWidths();
+    _persistLayoutSizes();
+  });
+}
 
 function toggleCurvePanel(forceState) {
   var app = document.getElementById('app');
@@ -2654,7 +2811,8 @@ window.takeSnapshot = takeSnapshot;
 // WebSocket connected handler (above) takes care of:
 //   - GPU detection + Snapshot button
 //   - Stage info + Outliner refresh
-// This block only starts the WS connection.
+// This block initializes layout + starts WS connection.
+initPanelSplitters();
 connectWS();
 </script>
 </body>
