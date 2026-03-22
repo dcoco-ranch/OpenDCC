@@ -786,22 +786,10 @@ import '/usd/bindings/emHdBindings.js';
 import { ThreeRenderDelegateInterface }
   from '/usd/hydra/ThreeJsRenderDelegate.js';
 
-// Hydra delegate patch: fallback when MaterialX material id is missing in map
+// Hydra delegate patch: deterministic MaterialX proxy hookup
 (function installHydraMaterialFallbackPatch() {
   if (window.__opendccHydraMatFallbackPatched) return;
   window.__opendccHydraMatFallbackPatched = true;
-
-  function _aliasNodeParam(node, dst, src) {
-    if (!node || Object.prototype.hasOwnProperty.call(node, dst)) return;
-    try {
-      Object.defineProperty(node, dst, {
-        configurable: true,
-        enumerable: false,
-        get: function() { return this[src]; },
-        set: function(v) { this[src] = v; },
-      });
-    } catch (_) {}
-  }
 
   function _resolveHydraMaterialInMap(mats, materialId) {
     try {
@@ -812,27 +800,11 @@ import { ThreeRenderDelegateInterface }
       var keys = Object.keys(mats || {});
       if (!keys.length) return null;
 
-      // Common context suffix patterns: ":surface", "@mtlx", ":surface@mtlx"
-      var direct = [
-        mid + ':surface',
-        mid + '@mtlx',
-        mid + ':surface@mtlx',
-      ];
+      var direct = [mid + ':surface', mid + '@mtlx', mid + ':surface@mtlx'];
       for (var i = 0; i < direct.length; i++) {
         if (mats[direct[i]]) return mats[direct[i]];
       }
 
-      // Suffix/prefix fuzzy match
-      var byContain = keys.filter(function(k) {
-        var s = String(k || '');
-        return s === mid || s.indexOf(mid) >= 0 || mid.indexOf(s) >= 0;
-      });
-      if (byContain.length) {
-        byContain.sort(function(a, b) { return String(a).length - String(b).length; });
-        return mats[byContain[0]];
-      }
-
-      // Match by basename for materials under the same prim
       var base = mid.split('/').pop();
       if (base) {
         var byBase = keys.filter(function(k) {
@@ -933,233 +905,6 @@ import { ThreeRenderDelegateInterface }
     }).catch(function() {});
   }
 
-  function _patchTextureRegistry(iface) {
-    try {
-      var reg = iface && iface.registry;
-      if (!reg || reg.__opendccPatched || typeof reg.getTexture !== 'function') return;
-
-      var _origGetTexture = reg.getTexture.bind(reg);
-      var _assetsPromise = null;
-
-      async function _getAssets() {
-        if (_assetsPromise) return _assetsPromise;
-        _assetsPromise = fetch('/api/stage/assets', { cache: 'no-store' })
-          .then(function(r) { return r.ok ? r.json() : { assets: [] }; })
-          .catch(function() { return { assets: [] }; });
-        return _assetsPromise;
-      }
-
-      function _sanitizeTexPath(rawPath) {
-        return String(rawPath || '')
-          .trim()
-          .replace(/^@+|@+$/g, '')
-          .replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '')
-          .replace(/^\.\//, '')
-          .replace(/^\//, '')
-          .replace(/\\/g, '/');
-      }
-
-      async function _resolveAltTexturePath(resourcePath) {
-        var p = _sanitizeTexPath(resourcePath);
-        if (!p) return null;
-
-        var info = await _getAssets();
-        var assets = Array.isArray(info.assets) ? info.assets : [];
-
-        if (assets.indexOf(p) >= 0) return p;
-
-        if (!p.startsWith('assets/')) {
-          var withAssets = 'assets/' + p;
-          if (assets.indexOf(withAssets) >= 0) return withAssets;
-        }
-
-        var base = p.split('/').pop().toLowerCase();
-        var cands = assets.filter(function(a) {
-          var al = String(a || '').toLowerCase();
-          return al === base || al.endsWith('/' + base);
-        });
-
-        cands.sort(function(a, b) {
-          var ap = String(a || '');
-          var bp = String(b || '');
-          var as = ap.indexOf('/tex/') >= 0 ? 0 : 1;
-          var bs = bp.indexOf('/tex/') >= 0 ? 0 : 1;
-          return (as - bs) || (ap.length - bp.length);
-        });
-
-        return cands.length ? cands[0] : null;
-      }
-
-      reg.getTexture = function(resourcePath) {
-        var rp = _sanitizeTexPath(resourcePath);
-        return _origGetTexture(rp).catch(async function(err) {
-          var alt = await _resolveAltTexturePath(rp);
-          if (!alt || alt === rp) throw err;
-          return _origGetTexture(alt);
-        });
-      };
-
-      reg.__opendccPatched = true;
-    } catch (_) {}
-  }
-
-  function _applyStandardSurfaceAliases(node) {
-    if (!node) return;
-    _aliasNodeParam(node, 'diffuseColor', 'base_color');
-    _aliasNodeParam(node, 'roughness', 'specular_roughness');
-    _aliasNodeParam(node, 'metallic', 'metalness');
-    _aliasNodeParam(node, 'emissiveColor', 'emission_color');
-  }
-
-  function _pickMaterialXMainNode(nodesObj) {
-    try {
-      var nodes = Object.values(nodesObj || {});
-      if (!nodes.length) return null;
-
-      var keyOrder = [
-        'base_color', 'diffuseColor',
-        'specular_roughness', 'roughness',
-        'metalness', 'metallic',
-        'normal', 'emission_color', 'emissiveColor'
-      ];
-
-      var scored = nodes.map(function(n) {
-        if (!n || typeof n !== 'object') return { node: n, score: -1 };
-        var s = 0;
-        for (var i = 0; i < keyOrder.length; i++) {
-          var k = keyOrder[i];
-          if (Object.prototype.hasOwnProperty.call(n, k) && n[k] != null) s += (i < 2 ? 4 : 2);
-        }
-        if (Object.prototype.hasOwnProperty.call(n, 'base')) s += 1;
-        if (Object.prototype.hasOwnProperty.call(n, 'specular')) s += 1;
-        if (Object.prototype.hasOwnProperty.call(n, 'surface')) s += 1;
-        return { node: n, score: s };
-      });
-
-      scored.sort(function(a, b) { return (b.score - a.score); });
-      if (scored[0] && scored[0].score > 0) return scored[0].node;
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function _sanitizeAssetToken(rawPath) {
-    return String(rawPath || '')
-      .trim()
-      .replace(/^@+|@+$/g, '')
-      .replace(/:SDF_FORMAT_ARGS:[^?#]+/i, '')
-      .replace(/^\.\//, '')
-      .replace(/^\//, '')
-      .replace(/\\/g, '/');
-  }
-
-  function _extractTexturePath(entry) {
-    var texRe = /\.(png|jpg|jpeg|tga|exr|hdr|tx|bmp|tif|tiff|webp)$/i;
-    var visited = new Set();
-    var cur = entry;
-
-    function _take(v) {
-      if (typeof v !== 'string') return null;
-      var s = _sanitizeAssetToken(v);
-      return texRe.test(s) ? s : null;
-    }
-
-    for (var depth = 0; depth < 32; depth++) {
-      if (!cur) break;
-
-      if (typeof cur === 'string') {
-        var s0 = _take(cur);
-        if (s0) return s0;
-        break;
-      }
-
-      if (typeof cur !== 'object') break;
-      if (visited.has(cur)) break;
-      visited.add(cur);
-
-      var cand = _take(cur.resolvedPath) || _take(cur.value) || _take(cur.file) || _take(cur.path) || _take(cur.asset) || _take(cur.filename) || _take(cur.uri);
-      if (cand) return cand;
-
-      if (cur.value && typeof cur.value === 'object') {
-        cur = cur.value;
-        continue;
-      }
-
-      if (cur.file && typeof cur.file === 'object') {
-        cand = _take(cur.file.resolvedPath) || _take(cur.file.value) || _take(cur.file.path) || _take(cur.file.asset);
-        if (cand) return cand;
-        if (cur.file.nodeIn) {
-          cur = cur.file.nodeIn;
-          continue;
-        }
-        cur = cur.file;
-        continue;
-      }
-
-      if (cur.nodeIn) {
-        cur = cur.nodeIn;
-        continue;
-      }
-
-      var next = null;
-      for (var k in cur) {
-        if (!Object.prototype.hasOwnProperty.call(cur, k)) continue;
-        var v = cur[k];
-        if (!v) continue;
-        if (typeof v === 'string' && _take(v)) return _take(v);
-        if (typeof v === 'object' && (v.nodeIn || v.file || v.value || v.resolvedPath || v.path || v.asset || v.filename || v.uri)) {
-          next = v;
-          break;
-        }
-      }
-
-      if (next) {
-        cur = next;
-        continue;
-      }
-      break;
-    }
-
-    return null;
-  }
-
-  function _applyMaterialXTextureFallback(material, mainNode, iface) {
-    try {
-      if (!material || !mainNode || !iface || !iface.registry) return;
-      var reg = iface.registry;
-
-      function _assignMap(path, apply) {
-        if (!path) return;
-        reg.getTexture(path).then(function(tex) {
-          try { apply(tex); material.needsUpdate = true; } catch (_) {}
-        }).catch(function() {});
-      }
-
-      var cPath = _extractTexturePath(mainNode.base_color || mainNode.diffuseColor);
-      _assignMap(cPath, function(tex) {
-        material.map = tex;
-        if (material.color) material.color.setHex(0xffffff);
-      });
-
-      var nPath = _extractTexturePath(mainNode.normal);
-      _assignMap(nPath, function(tex) {
-        material.normalMap = tex;
-        if (!material.normalScale) material.normalScale = new THREE.Vector2(1, 1);
-      });
-
-      var rPath = _extractTexturePath(mainNode.specular_roughness || mainNode.roughness);
-      _assignMap(rPath, function(tex) {
-        material.roughnessMap = tex;
-      });
-
-      var mPath = _extractTexturePath(mainNode.metalness || mainNode.metallic);
-      _assignMap(mPath, function(tex) {
-        material.metalnessMap = tex;
-      });
-    } catch (_) {}
-  }
-
   try {
     var proto = ThreeRenderDelegateInterface && ThreeRenderDelegateInterface.prototype;
     if (!proto || typeof proto.createRPrim !== 'function') return;
@@ -1168,7 +913,6 @@ import { ThreeRenderDelegateInterface }
     proto.createRPrim = function(typeId, id, instancerId) {
       var prim = _origCreateRPrim.call(this, typeId, id, instancerId);
       try {
-        _patchTextureRegistry(this);
         if (!prim || typeof prim.setMaterial !== 'function' || prim.__opendccMatPatched) return prim;
 
         var _origSetMaterial = prim.setMaterial;
@@ -1179,138 +923,37 @@ import { ThreeRenderDelegateInterface }
           var resolved = _resolveHydraMaterialInMap(mats, materialId);
           if (resolved && resolved._material && this._mesh) {
             this._mesh.material = resolved._material;
-            var rmat = this._mesh.material;
-            try {
-              if (rmat && rmat.name === 'DefaultMaterial') {
-                rmat = rmat.clone();
-                rmat.name = 'DefaultMaterial';
-                this._mesh.material = rmat;
-              }
-            } catch (_) {}
-            _applyServerProxyToMaterial(rmat || resolved._material, materialId);
-            return;
+          } else {
+            var fallback = mats && (mats[''] || mats['/__fallback__']);
+            if (fallback && fallback._material && this._mesh) {
+              try {
+                if (fallback._material.name === 'DefaultMaterial' && fallback._material.color) {
+                  fallback._material.color.setHex(0x777777);
+                }
+              } catch (_) {}
+              this._mesh.material = fallback._material;
+            } else {
+              _origSetMaterial.call(this, materialId);
+            }
           }
 
-          // Delegate fallback material key observed in HydraMaterial map
-          var fallback = mats && (mats[''] || mats['/__fallback__']);
-          if (fallback && fallback._material && this._mesh) {
-            try {
-              if (fallback._material.name === 'DefaultMaterial' && fallback._material.color) {
-                fallback._material.color.setHex(0x777777); // neutral instead of pink
-              }
-            } catch (_) {}
-            this._mesh.material = fallback._material;
-            var fmat = this._mesh.material;
-            try {
-              if (fmat && fmat.name === 'DefaultMaterial') {
-                fmat = fmat.clone();
-                fmat.name = 'DefaultMaterial';
-                this._mesh.material = fmat;
-              }
-            } catch (_) {}
-            _applyServerProxyToMaterial(fmat || fallback._material, materialId);
-            return;
-          }
-
-          var out = _origSetMaterial.call(this, materialId);
           try {
             if (this._mesh && this._mesh.material) {
-              var omat = this._mesh.material;
-              if (omat && omat.name === 'DefaultMaterial') {
-                omat = omat.clone();
-                omat.name = 'DefaultMaterial';
-                this._mesh.material = omat;
+              var m = this._mesh.material;
+              if (m && m.name === 'DefaultMaterial') {
+                m = m.clone();
+                m.name = 'DefaultMaterial';
+                this._mesh.material = m;
               }
-              _applyServerProxyToMaterial(omat || this._mesh.material, materialId);
+              _applyServerProxyToMaterial(m || this._mesh.material, materialId);
             }
           } catch (_) {}
-          return out;
         };
 
         prim.__opendccMatPatched = true;
       } catch (_) {}
       return prim;
     };
-
-    if (typeof proto.createSPrim === 'function') {
-      var _origCreateSPrim = proto.createSPrim;
-      proto.createSPrim = function(typeId, id) {
-        var s = _origCreateSPrim.call(this, typeId, id);
-        try {
-          _patchTextureRegistry(this);
-          if (!s || s.__opendccMtlxPatched) return s;
-
-          if (typeof s.updateNode === 'function') {
-            var _origUpdateNode = s.updateNode;
-            s.updateNode = function(networkId, path, parameters) {
-              var out = _origUpdateNode.call(this, networkId, path, parameters);
-              try {
-                var n = this._nodes && this._nodes[path];
-                _applyStandardSurfaceAliases(n || parameters);
-              } catch (_) {}
-              return out;
-            };
-          }
-
-          if (typeof s.updateFinished === 'function') {
-            var _origUpdateFinished = s.updateFinished;
-            s.updateFinished = async function(type, relationships) {
-              try {
-                if (this._nodes) {
-                  Object.values(this._nodes).forEach(_applyStandardSurfaceAliases);
-                }
-              } catch (_) {}
-
-              var out = await _origUpdateFinished.call(this, type, relationships);
-
-              var mainNode = null;
-              try {
-                if (this._nodes) {
-                  mainNode = _pickMaterialXMainNode(this._nodes);
-                }
-              } catch (_) {
-                mainNode = null;
-              }
-
-              // Try texture hookup even when delegate produced a non-default material.
-              try {
-                if (mainNode && this._material) {
-                  _applyMaterialXTextureFallback(this._material, mainNode, this._interface);
-                }
-              } catch (_) {}
-
-              // Last resort fallback: build a neutral PBR from base_color if
-              // delegate still ended on DefaultMaterial.
-              try {
-                if (this._material && this._material.name === 'DefaultMaterial' && mainNode) {
-                  var m = new THREE.MeshPhysicalMaterial({
-                    side: THREE.DoubleSide,
-                    color: new THREE.Color(0x888888),
-                    roughness: 0.6,
-                    metalness: 0.0,
-                    name: (this._id || 'MaterialX') + '_fallback',
-                  });
-
-                  var c = mainNode.base_color || mainNode.diffuseColor;
-                  if (Array.isArray(c) && c.length >= 3) {
-                    m.color = new THREE.Color().fromArray(c);
-                  }
-
-                  _applyMaterialXTextureFallback(m, mainNode, this._interface);
-                  this._material = m;
-                }
-              } catch (_) {}
-
-              return out;
-            };
-          }
-
-          s.__opendccMtlxPatched = true;
-        } catch (_) {}
-
-        return s;
-      };
-    }
   } catch (_) {}
 })();
 
