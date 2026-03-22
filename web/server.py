@@ -1320,7 +1320,20 @@ async def stage_save_edits_as(req: _StageSaveEditsAsReq):
         raise HTTPException(status_code=400, detail="Missing destination path")
 
     base_dir = os.path.dirname(_pxr_stage_path or "") if _pxr_stage_path else os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
-    resolved = out_path if os.path.isabs(out_path) else os.path.normpath(os.path.join(base_dir, out_path))
+    stages_root = os.environ.get("OPENDCC_STAGES_ROOT", "/data/stages")
+
+    if os.path.isabs(out_path):
+        resolved = out_path
+    else:
+        resolved = os.path.normpath(os.path.join(base_dir, out_path))
+        # Convenience: treat "Kitchen_set/foo.usda" as stages-root-relative,
+        # not relative to ".../Kitchen_set".
+        try:
+            first = out_path.replace("\\", "/").split("/", 1)[0]
+            if first and first == os.path.basename(base_dir.rstrip("/\\")):
+                resolved = os.path.normpath(os.path.join(stages_root, out_path))
+        except Exception:
+            pass
 
     out_dir = os.path.dirname(resolved)
     if out_dir:
@@ -1769,7 +1782,26 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
         return {"bound": False}
 
     binding = UsdShade.MaterialBindingAPI(prim)
-    mat, rel = binding.ComputeBoundMaterial()
+
+    bound_purpose = "allPurpose"
+    mat, rel = None, None
+    try:
+        mat, rel = binding.ComputeBoundMaterial()
+    except Exception:
+        mat, rel = None, None
+
+    if not mat:
+        for pn in ("preview", "full"):
+            try:
+                tok = _usdshade_token(UsdShade.Tokens, pn)
+                m, r = binding.ComputeBoundMaterial(tok)
+                if m:
+                    mat, rel = m, r
+                    bound_purpose = pn
+                    break
+            except Exception:
+                continue
+
     if not mat:
         return {
             "bound": False,
@@ -1791,7 +1823,7 @@ async def prim_material(prim_path: str, time: Optional[float] = None):
     mat_path = str(mat.GetPath())
     binding_info = {
         "isDirect": False,
-        "purpose": "allPurpose",
+        "purpose": bound_purpose,
         "strength": None,
         "relation": str(rel.GetPath()) if rel else None,
         "direct": {},
