@@ -982,6 +982,7 @@ async def stage_assets():
     root_name = os.path.basename(real_path)
 
     assets_set = set()
+    texture_exts = {".png", ".jpg", ".jpeg", ".tga", ".exr", ".hdr", ".tx", ".bmp", ".tif", ".tiff", ".webp"}
 
     # Preferred: only preload actually used layers.
     try:
@@ -1010,6 +1011,30 @@ async def stage_assets():
                     assets_set.add(rel)
 
     assets_set.add(root_name)
+
+    # MaterialX texture support: preload image files near used .mtlx files.
+    # This enables usd-wasm delegate texture loading via driver.getFile().
+    mtlx_rel_paths = [p for p in assets_set if p.lower().endswith('.mtlx')]
+    for mrel in mtlx_rel_paths:
+        try:
+            mabs = os.path.normpath(os.path.join(stage_dir, mrel))
+            if not os.path.exists(mabs):
+                continue
+            mdir = os.path.dirname(mabs)
+
+            # Scan material directory (and child dirs such as ./tex)
+            for dirpath, _dirs, filenames in os.walk(mdir):
+                for f in filenames:
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext not in texture_exts:
+                        continue
+                    full = os.path.join(dirpath, f)
+                    if not os.path.normpath(full).startswith(os.path.normpath(stage_dir)):
+                        continue
+                    rel = os.path.relpath(full, stage_dir).replace('\\', '/')
+                    assets_set.add(rel)
+        except Exception:
+            continue
 
     compose_layers = None
     if _pxr_available and stage is _pxr_stage and _pxr_edit_layer_path:
