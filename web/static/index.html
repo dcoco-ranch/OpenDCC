@@ -1179,16 +1179,27 @@ async function loadStage(reframe = true) {
       }
     }
 
-    // The root layer is already among the assets — use it as STAGE_VPATH
-    // Create a symlink or just read the root
-    const rootPath = '/' + stageInfo.rootLayer;
-    // Read back the root layer we just wrote
-    try {
-      usda = new TextDecoder().decode(USD.FS_readFile(rootPath));
-    } catch (_) {
-      // Fallback: fetch it separately
-      const r = await fetch('/api/stage/export.usda', { cache: 'no-store' });
-      usda = await r.text();
+    // Build virtual root for opening in WASM.
+    // In edit-layer mode, compose a tiny synthetic root with subLayers
+    // so we avoid expensive stage flatten on every reload.
+    if (Array.isArray(stageInfo.composeLayers) && stageInfo.composeLayers.length > 0) {
+      var lines = ['#usda 1.0', '(', '  subLayers = ['];
+      stageInfo.composeLayers.forEach(function(rel, idx) {
+        var comma = (idx < stageInfo.composeLayers.length - 1) ? ',' : '';
+        lines.push('    @' + String(rel).replace(/\\/g, '/') + '@' + comma);
+      });
+      lines.push('  ]', ')');
+      usda = lines.join('\n') + '\n';
+    } else {
+      const rootPath = '/' + stageInfo.rootLayer;
+      // Read back the root layer we just wrote
+      try {
+        usda = new TextDecoder().decode(USD.FS_readFile(rootPath));
+      } catch (_) {
+        // Fallback: fetch it separately
+        const r = await fetch('/api/stage/export.usda', { cache: 'no-store' });
+        usda = await r.text();
+      }
     }
   } else {
     // ── Simple mode: in-memory stage, just fetch USDA ───────────────────
@@ -1391,6 +1402,23 @@ window.THREE          = THREE;
      APP LOGIC  (REST / WebSocket / Outliner / Properties — plain script)
      ════════════════════════════════════════════════════════════════════ -->
 <script>
+// ── Console noise filter (targeted) ───────────────────────────────────────
+(function installHydraWarningFilter() {
+  if (window.__opendccWarnFilterInstalled) return;
+  window.__opendccWarnFilterInstalled = true;
+
+  var _warn = console.warn.bind(console);
+  console.warn = function() {
+    try {
+      var msg = Array.prototype.slice.call(arguments).join(' ');
+      if (msg.indexOf("Unsupported interpolation type 'uniform'") >= 0 && msg.indexOf('__faceindex') >= 0) {
+        return;
+      }
+    } catch (_) {}
+    return _warn.apply(console, arguments);
+  };
+})();
+
 // ── REST helper ───────────────────────────────────────────────────────────
 async function api(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };

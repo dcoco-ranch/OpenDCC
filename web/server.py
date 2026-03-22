@@ -930,17 +930,13 @@ async def health():
 async def stage_export_usda(flatten: bool = False):
     """Export the current stage as USDA.
 
-    Default behavior:
-    - standard mode: root-layer export (composition arcs preserved)
-    - pxr non-destructive edit-layer mode: auto-flatten composed result so
-      session-layer opinions are included in viewport reload payloads.
+    By default exports the root layer (preserving composition arcs).
+    Set flatten=true to resolve composed opinions into one layer.
     """
     stage = _current_stage()
     if stage:
         try:
-            force_flatten = bool(_pxr_available and stage is _pxr_stage and _pxr_edit_layer is not None)
-            do_flatten = bool(flatten or force_flatten)
-            if do_flatten:
+            if flatten:
                 flat_layer = stage.Flatten()
                 usda = flat_layer.ExportToString()
             else:
@@ -964,26 +960,17 @@ async def stage_export_usda(flatten: bool = False):
 
 @app.get("/api/stage/assets")
 async def stage_assets():
-    """List all USD files in the stage directory for WASM pre-loading.
-    
-    Returns root layer path and a list of all relative asset paths
-    that should be written into the WASM virtual FS.
+    """List USD layers required for WASM composition preload.
+
+    Uses stage.GetUsedLayers() when available (faster than scanning whole tree).
+    In pxr edit-layer mode, returns `composeLayers=[edit, root]` so frontend can
+    open a tiny synthetic root that composes non-destructive overrides.
     """
     import os
+
     stage = _current_stage()
     if not stage:
         return {"rootLayer": None, "assets": []}
-
-    # In pxr non-destructive edit-layer mode, avoid file-tree composition mode:
-    # viewport reload should consume /api/stage/export.usda (flattened composed view)
-    # so session-layer opinions are not lost.
-    if _pxr_available and stage is _pxr_stage and _pxr_edit_layer is not None:
-        return {
-            "rootLayer": None,
-            "assets": [],
-            "editLayer": _pxr_edit_layer_path,
-            "compositionMode": "flattened_export",
-        }
 
     real_path = stage.GetRootLayer().realPath
     if not real_path or not os.path.exists(real_path):
@@ -992,22 +979,60 @@ async def stage_assets():
 
     stage_dir = os.path.dirname(real_path)
     root_name = os.path.basename(real_path)
-    
-    assets = []
-    for dirpath, _dirs, filenames in os.walk(stage_dir):
-        for f in filenames:
-            full = os.path.join(dirpath, f)
-            rel = os.path.relpath(full, stage_dir).replace("\\", "/")
-            ext = os.path.splitext(f)[1].lower()
-            if ext in (".usd", ".usda", ".usdc", ".usdz"):
-                assets.append(rel)
 
-    return {
+    assets_set = set()
+
+    # Preferred: only preload actually used layers.
+    try:
+        for layer in stage.GetUsedLayers():
+            lp = layer.realPath or ""
+            if not lp:
+                continue
+            if not os.path.exists(lp):
+                continue
+            # Keep only files under stage dir (same trust model as /api/stage/asset)
+            if not os.path.normpath(lp).startswith(os.path.normpath(stage_dir)):
+                continue
+            ext = os.path.splitext(lp)[1].lower()
+            if ext not in (".usd", ".usda", ".usdc", ".usdz"):
+                continue
+            rel = os.path.relpath(lp, stage_dir).replace("\\", "/")
+            assets_set.add(rel)
+    except Exception:
+        # Fallback: old behavior (directory scan)
+        for dirpath, _dirs, filenames in os.walk(stage_dir):
+            for f in filenames:
+                full = os.path.join(dirpath, f)
+                rel = os.path.relpath(full, stage_dir).replace("\\", "/")
+                ext = os.path.splitext(f)[1].lower()
+                if ext in (".usd", ".usda", ".usdc", ".usdz"):
+                    assets_set.add(rel)
+
+    assets_set.add(root_name)
+
+    compose_layers = None
+    if _pxr_available and stage is _pxr_stage and _pxr_edit_layer_path:
+        try:
+            if os.path.exists(_pxr_edit_layer_path):
+                edit_rel = os.path.relpath(_pxr_edit_layer_path, stage_dir).replace("\\", "/")
+                assets_set.add(edit_rel)
+                # Strongest first
+                compose_layers = [edit_rel, root_name]
+        except Exception:
+            pass
+
+    assets = sorted(assets_set)
+    result = {
         "rootLayer": root_name,
         "stageDir": stage_dir,
         "assets": assets,
         "count": len(assets),
     }
+    if compose_layers:
+        result["composeLayers"] = compose_layers
+        result["compositionMode"] = "synthetic_root"
+        result["editLayer"] = _pxr_edit_layer_path
+    return result
 
 
 @app.get("/api/stage/asset")
