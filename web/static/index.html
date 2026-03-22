@@ -33,6 +33,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
 
+  <!-- Node editor runtime -->
+  <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.17/build/litegraph.min.js"></script>
+
   <style>
     /* ── Reset ─────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -373,6 +376,42 @@
       flex: 1;
       overflow: auto;
       padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #node-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #222;
+      flex-wrap: wrap;
+    }
+    #node-toolbar select, #node-toolbar input {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 11px;
+      height: 23px;
+    }
+    #node-canvas-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 320px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #1a1a1a;
+    }
+    #node-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
     #node-workbench svg text {
       user-select: none;
@@ -1849,6 +1888,11 @@ function connectWS() {
       setStatus('Material updated');
       _scheduleMaterialPanelRefresh();
     }
+    if (msg.event === 'node_graph_changed') {
+      if (Date.now() < _suppressMatWsUntil) return;
+      setStatus('Node graph updated');
+      _scheduleNodePanelRefresh();
+    }
     if (msg.event === 'stage_opened') {
       document.getElementById('stage-label').textContent = msg.path || '[stage]';
       setStatus('Opened: ' + msg.path);
@@ -2336,6 +2380,16 @@ window.cmdUndo = cmdUndo; window.cmdRedo = cmdRedo;
 
 document.addEventListener('keydown', function(ev) {
   if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA') return;
+
+  if ((ev.key === 'Delete' || ev.key === 'Backspace') && _nodeWorkbenchState.open) {
+    var node = _nodeGetSelectedLiteNode();
+    if (node && !node.__isMaterial) {
+      _deleteSelectedNodeInWorkbench();
+      ev.preventDefault();
+      return;
+    }
+  }
+
   if (ev.key === 'Delete' || ev.key === 'Backspace') { deleteSelected(); ev.preventDefault(); }
   if (ev.key === 'd' && (ev.ctrlKey || ev.metaKey)) { duplicateSelected(); ev.preventDefault(); }
   if (ev.key === 'g' && (ev.ctrlKey || ev.metaKey)) { groupSelected(); ev.preventDefault(); }
@@ -3297,84 +3351,353 @@ function _nodeGraphSignature(primPath, data) {
   }
 }
 
+const _nodeGraphUi = {
+  initialized: false,
+  graph: null,
+  canvas: null,
+  canvasEl: null,
+  host: null,
+  nodesByPath: {},
+  suppress: false,
+  library: [],
+};
+
+function _nodeGetSelectedLiteNode() {
+  if (!_nodeGraphUi.canvas || !_nodeGraphUi.canvas.selected_nodes) return null;
+  var vals = Object.values(_nodeGraphUi.canvas.selected_nodes);
+  return vals.length ? vals[0] : null;
+}
+
+async function _deleteSelectedNodeInWorkbench() {
+  var node = _nodeGetSelectedLiteNode();
+  if (!node || !node.__nodePath || node.__isMaterial) {
+    setStatus('Select a shader node to delete', true);
+    return false;
+  }
+  _suppressMatWsUntil = Date.now() + 250;
+  var res = await api('/api/node_graph/delete_node', 'POST', { node_path: node.__nodePath });
+  if (!res || !res.ok) {
+    setStatus('Node delete failed', true);
+    return false;
+  }
+  setStatus('Node deleted: ' + node.__nodePath);
+  _nodeWorkbenchState.signature = '';
+  await loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+  return true;
+}
+
+function _nodeSetToolbarEnabled(enabled) {
+  var sel = document.getElementById('node-create-shader');
+  var name = document.getElementById('node-create-name');
+  var addBtn = document.getElementById('node-add-btn');
+  var delBtn = document.getElementById('node-del-btn');
+  if (sel) sel.disabled = !enabled;
+  if (name) name.disabled = !enabled;
+  if (addBtn) addBtn.disabled = !enabled;
+  if (delBtn) delBtn.disabled = !enabled;
+}
+
+function _nodePopulateLibrary(items) {
+  var sel = document.getElementById('node-create-shader');
+  if (!sel) return;
+  var arr = Array.isArray(items) ? items : [];
+
+  var prev = sel.value || '';
+  sel.innerHTML = '';
+  arr.forEach(function(it) {
+    var opt = document.createElement('option');
+    opt.value = it.id;
+    opt.textContent = it.label ? (it.label + ' (' + it.id + ')') : it.id;
+    sel.appendChild(opt);
+  });
+
+  if (arr.length && arr.some(function(i) { return i.id === prev; })) {
+    sel.value = prev;
+  } else if (arr.length) {
+    sel.value = arr[0].id;
+  }
+
+  _nodeGraphUi.library = arr;
+}
+
+function _nodeEnsureWorkbenchLayout(host) {
+  if (!host) return;
+  if (host.querySelector('#node-toolbar')) {
+    _nodeGraphUi.host = host;
+    return;
+  }
+
+  host.innerHTML = '';
+
+  var toolbar = document.createElement('div');
+  toolbar.id = 'node-toolbar';
+  toolbar.innerHTML = ''
+    + '<label style="color:var(--text2);font-size:10px">Add:</label>'
+    + '<select id="node-create-shader"></select>'
+    + '<input id="node-create-name" type="text" placeholder="node name (optional)" style="width:150px;margin:0" />'
+    + '<button id="node-add-btn" style="padding:1px 6px;font-size:10px">＋ Node</button>'
+    + '<span style="width:1px;height:14px;background:var(--border);margin:0 4px"></span>'
+    + '<button id="node-del-btn" style="padding:1px 6px;font-size:10px">🗑 Delete selected</button>'
+    + '<span style="flex:1"></span>'
+    + '<span id="node-legend" style="color:var(--text2);font-size:10px">Drag from output to input to connect</span>';
+
+  var msg = document.createElement('div');
+  msg.id = 'node-msg';
+  msg.style.cssText = 'padding:4px 2px;color:var(--text2);font-size:10px;line-height:1.5';
+
+  var wrap = document.createElement('div');
+  wrap.id = 'node-canvas-wrap';
+  var canvas = document.createElement('canvas');
+  canvas.id = 'node-canvas';
+  wrap.appendChild(canvas);
+
+  host.appendChild(toolbar);
+  host.appendChild(msg);
+  host.appendChild(wrap);
+
+  _nodeGraphUi.host = host;
+  _nodeGraphUi.canvasEl = canvas;
+
+  var addBtn = toolbar.querySelector('#node-add-btn');
+  if (addBtn) addBtn.addEventListener('click', async function() {
+    if (!_nodeWorkbenchState.primPath) return;
+    var sid = document.getElementById('node-create-shader')?.value || 'UsdPreviewSurface';
+    var nn = document.getElementById('node-create-name')?.value || '';
+    _suppressMatWsUntil = Date.now() + 250;
+    var res = await api('/api/node_graph/create_node', 'POST', {
+      prim_path: _nodeWorkbenchState.primPath,
+      shader_id: sid,
+      node_name: nn,
+    });
+    if (!res || !res.ok) {
+      setStatus('Node create failed', true);
+      return;
+    }
+    setStatus('Node created: ' + (res.nodePath || sid));
+    _nodeWorkbenchState.signature = '';
+    loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+  });
+
+  var delBtn = toolbar.querySelector('#node-del-btn');
+  if (delBtn) delBtn.addEventListener('click', async function() {
+    await _deleteSelectedNodeInWorkbench();
+  });
+
+  if (!window.LiteGraph) {
+    msg.textContent = 'LiteGraph unavailable — falling back to static graph view';
+    return;
+  }
+
+  try {
+    var graph = new LiteGraph.LGraph();
+    var graphCanvas = new LiteGraph.LGraphCanvas(canvas, graph);
+    graphCanvas.background_image = null;
+    graphCanvas.clear_background = true;
+    graphCanvas.allow_interaction = true;
+    graphCanvas.always_render_background = true;
+
+    graph.onNodeConnectionChange = async function(type, node, slot, connectedNode, connectedSlot) {
+      if (_nodeGraphUi.suppress) return;
+      if (!node || type !== LiteGraph.INPUT) return;
+      var input = node.inputs && node.inputs[slot];
+      if (!input) return;
+
+      _suppressMatWsUntil = Date.now() + 250;
+
+      if (input.link != null && connectedNode && connectedNode.__nodePath) {
+        var srcOutput = (connectedNode.outputs && connectedNode.outputs[connectedSlot] && connectedNode.outputs[connectedSlot].name) || '';
+        var payload = {
+          source_node_path: connectedNode.__nodePath,
+          source_output: srcOutput,
+        };
+        if (node.__isMaterial) {
+          payload.material_path = node.__nodePath;
+          payload.material_output = input.name;
+        } else {
+          payload.target_node_path = node.__nodePath;
+          payload.target_input = input.name;
+        }
+        var cres = await api('/api/node_graph/connect', 'POST', payload);
+        if (!cres || !cres.ok) {
+          setStatus('Node connect failed', true);
+          _nodeWorkbenchState.signature = '';
+          loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+          return;
+        }
+        setStatus('Connected: ' + srcOutput + ' → ' + input.name);
+      } else {
+        var dres;
+        if (node.__isMaterial) {
+          dres = await api('/api/node_graph/disconnect', 'POST', {
+            material_path: node.__nodePath,
+            material_output: input.name,
+          });
+        } else {
+          dres = await api('/api/node_graph/disconnect', 'POST', {
+            target_node_path: node.__nodePath,
+            target_input: input.name,
+          });
+        }
+        if (!dres || !dres.ok) {
+          setStatus('Node disconnect failed', true);
+          _nodeWorkbenchState.signature = '';
+          loadNodePanel(_nodeWorkbenchState.primPath, { forceRender: true });
+          return;
+        }
+        setStatus('Disconnected: ' + input.name);
+      }
+
+      _scheduleNodePanelRefresh();
+    };
+
+    _nodeGraphUi.graph = graph;
+    _nodeGraphUi.canvas = graphCanvas;
+    _nodeGraphUi.initialized = true;
+
+    var ro = new ResizeObserver(function() {
+      try { graphCanvas.resize(); } catch (_) {}
+    });
+    ro.observe(wrap);
+  } catch (e) {
+    msg.textContent = 'LiteGraph init failed: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function _nodeMakeLiteNode(dataNode, pos) {
+  var n = new LiteGraph.LGraphNode();
+  n.title = dataNode.name || dataNode.id || 'Node';
+  n.pos = [Number((pos && pos.x) || 20), Number((pos && pos.y) || 20)];
+  n.__nodePath = dataNode.path || dataNode.id;
+  n.__isMaterial = (dataNode.type === 'Material');
+  n.__shaderId = dataNode.shaderId || '';
+
+  var kind = n.__isMaterial ? 'material' : _nodeShaderKind(dataNode);
+  n.color = '#5d5d5d';
+  n.bgcolor = '#2f2f2f';
+  if (kind === 'material') { n.color = '#6f8fb6'; n.bgcolor = '#324a67'; }
+  else if (kind === 'surface') { n.color = '#6d8854'; n.bgcolor = '#414b32'; }
+  else if (kind === 'texture') { n.color = '#8a744f'; n.bgcolor = '#4c3f2f'; }
+  else if (kind === 'reader') { n.color = '#7865a0'; n.bgcolor = '#3b334d'; }
+
+  if (n.__isMaterial) {
+    (dataNode.outputs || []).forEach(function(o) { n.addInput(o.name, o.type || '*'); });
+  } else {
+    (dataNode.inputs || []).forEach(function(i) { n.addInput(i.name, i.type || '*'); });
+    (dataNode.outputs || []).forEach(function(o) { n.addOutput(o.name, o.type || '*'); });
+  }
+
+  n.size = n.computeSize ? n.computeSize() : n.size;
+  return n;
+}
+
+function _nodeBuildInteractiveGraph(data) {
+  if (!_nodeGraphUi.graph || !_nodeGraphUi.canvas || !window.LiteGraph) return false;
+
+  try {
+    var nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    var edges = Array.isArray(data.edges) ? data.edges : [];
+    var materialPath = data && data.material ? data.material.path : null;
+    var selected = _nodeGetSelectedLiteNode();
+    var selectedPath = selected && selected.__nodePath ? selected.__nodePath : null;
+
+    var layout = _layoutNodeGraph(nodes, edges, materialPath);
+
+    _nodeGraphUi.suppress = true;
+    _nodeGraphUi.graph.clear();
+    _nodeGraphUi.nodesByPath = {};
+
+    nodes.forEach(function(dn) {
+      var node = _nodeMakeLiteNode(dn, layout.pos[dn.id]);
+      _nodeGraphUi.graph.add(node);
+      _nodeGraphUi.nodesByPath[node.__nodePath] = node;
+    });
+
+    edges.forEach(function(e) {
+      var s = _nodeGraphUi.nodesByPath[e.source];
+      var t = _nodeGraphUi.nodesByPath[e.target];
+      if (!s || !t) return;
+
+      var outSlot = s.findOutputSlot ? s.findOutputSlot(e.sourceOutput) : -1;
+      var inSlot = t.findInputSlot ? t.findInputSlot(e.targetInput) : -1;
+      if (outSlot < 0 || inSlot < 0) return;
+
+      try {
+        s.connect(outSlot, t, inSlot);
+      } catch (_) {}
+    });
+
+    _nodeGraphUi.suppress = false;
+
+    if (selectedPath && _nodeGraphUi.nodesByPath[selectedPath] && _nodeGraphUi.canvas.selectNode) {
+      try { _nodeGraphUi.canvas.selectNode(_nodeGraphUi.nodesByPath[selectedPath], false); } catch (_) {}
+    }
+
+    try { _nodeGraphUi.canvas.resize(); } catch (_) {}
+    return true;
+  } catch (_) {
+    _nodeGraphUi.suppress = false;
+    return false;
+  }
+}
+
 function _renderNodePanelContent(host, primPath, data) {
-  var frag = document.createDocumentFragment();
+  _nodeEnsureWorkbenchLayout(host);
+
+  var msg = document.getElementById('node-msg');
+  var wrap = document.getElementById('node-canvas-wrap');
+  if (!msg || !wrap) return;
+
+  var info = '<b style="color:var(--text)">Prim</b> ' + _nodeEsc(primPath || '—');
 
   if (!primPath) {
-    var empty = document.createElement('div');
-    empty.style.cssText = 'padding:8px;font-size:11px;color:var(--text2)';
-    empty.textContent = 'Select a prim to inspect shader graph';
-    frag.appendChild(empty);
-    host.replaceChildren(frag);
+    msg.innerHTML = info + '<br/>Select a prim to inspect shader graph';
+    _nodeSetToolbarEnabled(false);
+    if (wrap) wrap.style.display = 'none';
     return;
   }
-
-  var info = document.createElement('div');
-  info.style.cssText = 'padding:2px 2px 8px 2px;color:var(--text2);font-size:10px;line-height:1.5';
-  info.innerHTML = '<div><b style="color:var(--text)">Prim</b> ' + _nodeEsc(primPath) + '</div>';
-  frag.appendChild(info);
 
   if (!data || data.ok === false) {
-    var err = document.createElement('div');
-    err.style.cssText = 'padding:8px;color:var(--danger);font-size:11px';
-    err.textContent = 'Failed to load node graph';
-    frag.appendChild(err);
-    host.replaceChildren(frag);
+    msg.innerHTML = info + '<br/><span style="color:var(--danger)">Failed to load node graph</span>';
+    _nodeSetToolbarEnabled(false);
+    if (wrap) wrap.style.display = 'none';
     return;
   }
 
-  if (!data.bound) {
-    var msg = document.createElement('div');
-    msg.style.cssText = 'padding:8px;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:4px;display:flex;flex-direction:column;gap:8px';
-    msg.textContent = 'No bound material found on selected prim.';
+  _nodePopulateLibrary(data.library || []);
 
-    var btn = document.createElement('button');
-    btn.textContent = '+ Create & Bind PreviewSurface';
-    btn.style.cssText = 'width:max-content;padding:2px 8px;font-size:11px';
-    btn.addEventListener('click', async function() {
+  if (!data.bound) {
+    _nodeSetToolbarEnabled(false);
+    if (wrap) wrap.style.display = 'none';
+    msg.innerHTML = info + '<br/>No bound material found on selected prim. '
+      + '<button id="node-quick-bind" style="margin-left:6px;padding:1px 6px;font-size:10px">+ Create & Bind PreviewSurface</button>';
+
+    var qb = document.getElementById('node-quick-bind');
+    if (qb) qb.onclick = async function() {
       var ok = await bindDefaultMaterial(primPath);
       if (ok) {
         _nodeWorkbenchState.signature = '';
         loadNodePanel(primPath, { forceRender: true });
       }
-    });
-    msg.appendChild(btn);
-    frag.appendChild(msg);
-
-    host.replaceChildren(frag);
+    };
     return;
   }
 
   var mat = data.material || {};
-  info.innerHTML += '<div><b style="color:var(--text)">Material</b> ' + _nodeEsc(mat.path || '—') + '</div>'
-    + '<div>Binding: purpose=' + _nodeEsc(mat.purpose || 'allPurpose') + (mat.isDirect ? ' (direct)' : ' (computed)') + '</div>';
+  msg.innerHTML = info + '<br/><b style="color:var(--text)">Material</b> ' + _nodeEsc(mat.path || '—')
+    + '<br/>Binding: purpose=' + _nodeEsc(mat.purpose || 'allPurpose') + (mat.isDirect ? ' (direct)' : ' (computed)')
+    + '<span style="margin-left:8px;color:var(--text2)">nodes=' + (data.nodes ? data.nodes.length : 0)
+    + ', edges=' + (data.edges ? data.edges.length : 0) + '</span>';
 
-  var sec = document.createElement('div');
-  sec.className = 'attr-section';
-  var hdr = document.createElement('div');
-  hdr.className = 'attr-section-header';
-  hdr.innerHTML = '<span class="toggle">▾</span> Node Graph <span class="mat-tag">Static</span>'
-    + '<span style="color:var(--text2);font-size:10px;margin-left:auto">'
-    + (data.nodes ? data.nodes.length : 0) + ' nodes / ' + (data.edges ? data.edges.length : 0) + ' edges</span>';
-  hdr.addEventListener('click', function() {
-    var b = sec.querySelector('.attr-section-body');
-    b.classList.toggle('collapsed');
-    hdr.querySelector('.toggle').textContent = b.classList.contains('collapsed') ? '▸' : '▾';
-  });
+  _nodeSetToolbarEnabled(true);
+  if (wrap) wrap.style.display = 'block';
 
-  var body = document.createElement('div');
-  body.className = 'attr-section-body';
+  if (_nodeBuildInteractiveGraph(data)) {
+    return;
+  }
 
-  var graphWrap = document.createElement('div');
-  graphWrap.style.cssText = 'padding:8px';
-  _renderNodeGraphSvg(graphWrap, data);
-  body.appendChild(graphWrap);
-
-  sec.appendChild(hdr);
-  sec.appendChild(body);
-  frag.appendChild(sec);
-
-  host.replaceChildren(frag);
+  // Fallback: static SVG if LiteGraph runtime unavailable
+  wrap.innerHTML = '';
+  _renderNodeGraphSvg(wrap, data);
 }
 
 async function loadNodePanel(primPath, opts) {
@@ -3389,7 +3712,7 @@ async function loadNodePanel(primPath, opts) {
 
   if (!path) {
     _nodeWorkbenchState.signature = '';
-    _renderNodePanelContent(host, '', { ok: true, bound: false, nodes: [], edges: [] });
+    _renderNodePanelContent(host, '', { ok: true, bound: false, nodes: [], edges: [], library: _nodeGraphUi.library || [] });
     _setNodeWorkbenchStatus('');
     return;
   }

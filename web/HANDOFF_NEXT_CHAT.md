@@ -12,20 +12,26 @@ Branch: `develop`
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 
 ## New in current chat (in progress)
-- Phase 4.3 Node Editor web MVP continued (stability-first):
-  - backend endpoint `GET /api/node_graph/{prim_path}` (from previous commit) kept as graph source
-  - frontend moved to detached viewport workbench (`#node-workbench`):
-    - no longer tied to Properties inspector
+- Phase 4.3 Node Editor web MVP advanced to interactive authoring:
+  - detached viewport workbench (`#node-workbench`) kept and hardened:
     - modes: `Split` (side-by-side with viewport), `Detached`, `Fullscreen`
-    - static rendering only (no dynamic connect/disconnect interactions)
-  - flicker reduction on node view refresh:
     - request de-dup/stale-response guard (`reqId`)
     - graph signature comparison to skip no-op re-renders
     - preserve previous graph while loading
-    - debounced refresh on `material_changed`
+    - debounced refresh on `material_changed` + `node_graph_changed`
+  - interactive graph runtime via LiteGraph (browser):
+    - drag & drop connect/disconnect between shader nodes and material outputs
+    - node creation from shader library
+    - node deletion (button + Delete key)
+  - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
+    - `GET /api/node_graph/library`
+    - `POST /api/node_graph/create_node`
+    - `POST /api/node_graph/delete_node`
+    - `POST /api/node_graph/connect`
+    - `POST /api/node_graph/disconnect`
   - quick action when no material: `+ Create & Bind PreviewSurface`
 - External reference inspected: `cubiq/Mellon`
-  - web bundle shows React Flow-based node UX patterns (styling/minimap/controls), useful reference for next UI iteration.
+  - React Flow UX cues used as target for next polish pass (readability/controls/minimap style).
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.

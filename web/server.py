@@ -1973,6 +1973,182 @@ def _compute_bound_material(binding_api):
     return mat, rel, purpose
 
 
+_NODE_SHADER_LIBRARY = [
+    {
+        "id": "UsdPreviewSurface",
+        "label": "Preview Surface",
+        "base_name": "PreviewSurface",
+        "inputs": [
+            {"name": "diffuseColor", "type": "Color3f", "default": [0.18, 0.18, 0.18]},
+            {"name": "roughness", "type": "Float", "default": 0.5},
+            {"name": "metallic", "type": "Float", "default": 0.0},
+            {"name": "opacity", "type": "Float", "default": 1.0},
+        ],
+        "outputs": [
+            {"name": "surface", "type": "Token"},
+        ],
+    },
+    {
+        "id": "UsdUVTexture",
+        "label": "UV Texture",
+        "base_name": "UVTexture",
+        "inputs": [
+            {"name": "file", "type": "Asset"},
+            {"name": "st", "type": "Float2"},
+        ],
+        "outputs": [
+            {"name": "rgb", "type": "Float3"},
+            {"name": "r", "type": "Float"},
+        ],
+    },
+    {
+        "id": "UsdPrimvarReader_float2",
+        "label": "Primvar Reader (float2)",
+        "base_name": "PrimvarReader2",
+        "inputs": [
+            {"name": "varname", "type": "Token", "default": "st"},
+        ],
+        "outputs": [
+            {"name": "result", "type": "Float2"},
+        ],
+    },
+    {
+        "id": "UsdPrimvarReader_float",
+        "label": "Primvar Reader (float)",
+        "base_name": "PrimvarReader1",
+        "inputs": [
+            {"name": "varname", "type": "Token"},
+        ],
+        "outputs": [
+            {"name": "result", "type": "Float"},
+        ],
+    },
+]
+
+
+def _node_shader_def(shader_id: str) -> dict:
+    sid = str(shader_id or "").strip()
+    for d in _NODE_SHADER_LIBRARY:
+        if d["id"] == sid:
+            return d
+    return {
+        "id": sid or "UsdPreviewSurface",
+        "label": sid or "Shader",
+        "base_name": _sanitize_ident((sid or "Shader").split("_")[0], "Shader"),
+        "inputs": [],
+        "outputs": [],
+    }
+
+
+def _node_type_from_name(Sdf, type_name: str):
+    name = str(type_name or "Token")
+    return getattr(Sdf.ValueTypeNames, name, Sdf.ValueTypeNames.Token)
+
+
+def _node_apply_shader_ports(shader, shader_id: str):
+    from pxr import Sdf
+
+    spec = _node_shader_def(shader_id)
+    shader.CreateIdAttr(spec["id"])
+
+    for inp_def in spec.get("inputs", []):
+        name = str(inp_def.get("name") or "")
+        if not name:
+            continue
+        t = _node_type_from_name(Sdf, inp_def.get("type", "Token"))
+        inp = shader.GetInput(name)
+        if not inp:
+            inp = shader.CreateInput(name, t)
+        if "default" in inp_def:
+            try:
+                cur = inp.Get()
+                if cur is None:
+                    inp.Set(_coerce_preview_value(inp, inp_def["default"]))
+            except Exception:
+                pass
+
+    for out_def in spec.get("outputs", []):
+        name = str(out_def.get("name") or "")
+        if not name:
+            continue
+        t = _node_type_from_name(Sdf, out_def.get("type", "Token"))
+        out = shader.GetOutput(name)
+        if not out:
+            shader.CreateOutput(name, t)
+
+
+def _node_material_output(mat, output_name: str, create: bool = False):
+    out_name = str(output_name or "surface").strip().lower()
+    fn = {
+        "surface": ("GetSurfaceOutput", "CreateSurfaceOutput"),
+        "displacement": ("GetDisplacementOutput", "CreateDisplacementOutput"),
+        "volume": ("GetVolumeOutput", "CreateVolumeOutput"),
+    }.get(out_name, ("GetSurfaceOutput", "CreateSurfaceOutput"))
+
+    getter = getattr(mat, fn[0], None)
+    creator = getattr(mat, fn[1], None)
+
+    out = None
+    if callable(getter):
+        try:
+            out = getter()
+        except Exception:
+            out = None
+    if (not out) and create and callable(creator):
+        try:
+            out = creator()
+        except Exception:
+            out = None
+    return out, (out_name if out_name in {"surface", "displacement", "volume"} else "surface")
+
+
+def _node_connect_input(inp, source_shader, source_output_name: str):
+    out_name = str(source_output_name or "").strip()
+    if not out_name:
+        raise HTTPException(status_code=400, detail="Missing source output name")
+    try:
+        inp.ConnectToSource(source_shader.ConnectableAPI(), out_name)
+        return
+    except Exception:
+        pass
+    try:
+        inp.ConnectToSource(source_shader, out_name)
+        return
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Connect failed: {exc}")
+
+
+class _NodeCreateReq(BaseModel):
+    prim_path: str
+    shader_id: str
+    node_name: Optional[str] = None
+
+
+class _NodeDeleteReq(BaseModel):
+    node_path: str
+
+
+class _NodeConnectReq(BaseModel):
+    source_node_path: str
+    source_output: str
+    target_node_path: Optional[str] = None
+    target_input: Optional[str] = None
+    material_path: Optional[str] = None
+    material_output: Optional[str] = None
+
+
+class _NodeDisconnectReq(BaseModel):
+    target_node_path: Optional[str] = None
+    target_input: Optional[str] = None
+    material_path: Optional[str] = None
+    material_output: Optional[str] = None
+
+
+@app.get("/api/node_graph/library")
+async def node_graph_library():
+    return {"ok": True, "items": _NODE_SHADER_LIBRARY}
+
+
 @app.get("/api/node_graph/{prim_path:path}")
 async def node_graph(prim_path: str):
     """Minimal node graph view for bound UsdShade material network."""
@@ -1985,6 +2161,8 @@ async def node_graph(prim_path: str):
             "bound": False,
             "nodes": [],
             "edges": [],
+            "library": _NODE_SHADER_LIBRARY,
+            "editable": False,
         }
 
     from pxr import Sdf, Usd, UsdShade
@@ -2004,6 +2182,8 @@ async def node_graph(prim_path: str):
             "nodes": [],
             "edges": [],
             "material": None,
+            "library": _NODE_SHADER_LIBRARY,
+            "editable": False,
         }
 
     mat_prim = mat.GetPrim()
@@ -2162,6 +2342,7 @@ async def node_graph(prim_path: str):
         "ok": True,
         "primPath": full_path,
         "bound": True,
+        "editable": True,
         "material": {
             "path": mat_path,
             "bindingRelation": str(rel.GetPath()) if rel else None,
@@ -2170,6 +2351,288 @@ async def node_graph(prim_path: str):
         },
         "nodes": nodes,
         "edges": edges,
+        "library": _NODE_SHADER_LIBRARY,
+    }
+
+
+@app.post("/api/node_graph/create_node")
+async def node_graph_create_node(req: _NodeCreateReq):
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    full_path = "/" + req.prim_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+    binding = UsdShade.MaterialBindingAPI(prim)
+    mat, _rel, _purpose = _compute_bound_material(binding)
+    if not mat:
+        raise HTTPException(status_code=400, detail="No bound material on selected prim")
+
+    spec = _node_shader_def(req.shader_id)
+    _pxr_push_undo()
+
+    mat_path = mat.GetPrim().GetPath()
+    base = req.node_name or spec.get("base_name") or "Shader"
+    node_path = _unique_child_path(stage, mat_path, base)
+
+    shader = UsdShade.Shader.Define(stage, node_path)
+    _node_apply_shader_ports(shader, spec["id"])
+
+    await _conns.broadcast({
+        "event": "node_graph_changed",
+        "primPath": full_path,
+        "materialPath": str(mat.GetPath()),
+        "action": "create_node",
+        "nodePath": str(node_path),
+    })
+    await _conns.broadcast({
+        "event": "material_changed",
+        "primPath": full_path,
+        "materialPath": str(mat.GetPath()),
+        "node_graph": True,
+    })
+
+    return {
+        "ok": True,
+        "primPath": full_path,
+        "materialPath": str(mat.GetPath()),
+        "nodePath": str(node_path),
+        "shaderId": spec["id"],
+    }
+
+
+@app.post("/api/node_graph/delete_node")
+async def node_graph_delete_node(req: _NodeDeleteReq):
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    node_path = "/" + req.node_path.lstrip("/")
+    prim = stage.GetPrimAtPath(Sdf.Path(node_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_path}")
+
+    shader = UsdShade.Shader(prim)
+    if not shader:
+        raise HTTPException(status_code=400, detail="Only shader nodes can be deleted")
+
+    parent = prim.GetParent()
+    mat_path = None
+    if parent and parent.IsValid() and UsdShade.Material(parent):
+        mat_path = str(parent.GetPath())
+
+    _pxr_push_undo()
+    ok = stage.RemovePrim(Sdf.Path(node_path))
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Failed to delete node: {node_path}")
+
+    await _conns.broadcast({
+        "event": "node_graph_changed",
+        "materialPath": mat_path,
+        "action": "delete_node",
+        "nodePath": node_path,
+    })
+    await _conns.broadcast({
+        "event": "material_changed",
+        "materialPath": mat_path,
+        "node_graph": True,
+    })
+
+    return {"ok": True, "nodePath": node_path, "materialPath": mat_path}
+
+
+@app.post("/api/node_graph/connect")
+async def node_graph_connect(req: _NodeConnectReq):
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    src_path = "/" + req.source_node_path.lstrip("/")
+    src_prim = stage.GetPrimAtPath(Sdf.Path(src_path))
+    if not src_prim or not src_prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Source node not found: {src_path}")
+
+    src_shader = UsdShade.Shader(src_prim)
+    if not src_shader:
+        raise HTTPException(status_code=400, detail="Source node must be a shader")
+
+    src_out_name = str(req.source_output or "").strip()
+    if not src_out_name:
+        raise HTTPException(status_code=400, detail="Missing source output")
+
+    src_out = src_shader.GetOutput(src_out_name)
+    if not src_out:
+        src_out = src_shader.CreateOutput(src_out_name, _node_type_from_name(Sdf, "Token"))
+
+    to_shader = bool(req.target_node_path)
+    to_material = bool(req.material_path)
+    if to_shader == to_material:
+        raise HTTPException(status_code=400, detail="Specify either target_node_path or material_path")
+
+    _pxr_push_undo()
+
+    material_path = None
+    target_path = None
+    target_port = None
+
+    if to_shader:
+        target_path = "/" + str(req.target_node_path).lstrip("/")
+        tgt_prim = stage.GetPrimAtPath(Sdf.Path(target_path))
+        if not tgt_prim or not tgt_prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Target node not found: {target_path}")
+
+        tgt_shader = UsdShade.Shader(tgt_prim)
+        if not tgt_shader:
+            raise HTTPException(status_code=400, detail="Target node must be a shader")
+
+        target_port = str(req.target_input or "").strip()
+        if not target_port:
+            raise HTTPException(status_code=400, detail="Missing target_input")
+
+        inp = tgt_shader.GetInput(target_port)
+        if not inp:
+            out_type = src_out.GetTypeName() if src_out else _node_type_from_name(Sdf, "Token")
+            inp = tgt_shader.CreateInput(target_port, out_type)
+
+        _node_connect_input(inp, src_shader, src_out_name)
+
+        parent = tgt_prim.GetParent()
+        if parent and parent.IsValid() and UsdShade.Material(parent):
+            material_path = str(parent.GetPath())
+
+    else:
+        material_path = "/" + str(req.material_path).lstrip("/")
+        mat_prim = stage.GetPrimAtPath(Sdf.Path(material_path))
+        if not mat_prim or not mat_prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Material not found: {material_path}")
+
+        mat = UsdShade.Material(mat_prim)
+        if not mat:
+            raise HTTPException(status_code=400, detail="Target material path is not a UsdShade material")
+
+        out, out_name = _node_material_output(mat, req.material_output or "surface", create=True)
+        if not out:
+            raise HTTPException(status_code=400, detail="Cannot resolve material output")
+
+        target_port = out_name
+        _node_connect_input(out, src_shader, src_out_name)
+
+    await _conns.broadcast({
+        "event": "node_graph_changed",
+        "action": "connect",
+        "sourceNodePath": src_path,
+        "sourceOutput": src_out_name,
+        "targetPath": target_path or material_path,
+        "targetPort": target_port,
+        "materialPath": material_path,
+    })
+    await _conns.broadcast({
+        "event": "material_changed",
+        "materialPath": material_path,
+        "node_graph": True,
+    })
+
+    return {
+        "ok": True,
+        "sourceNodePath": src_path,
+        "sourceOutput": src_out_name,
+        "targetPath": target_path or material_path,
+        "targetPort": target_port,
+        "materialPath": material_path,
+    }
+
+
+@app.post("/api/node_graph/disconnect")
+async def node_graph_disconnect(req: _NodeDisconnectReq):
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "error": "no stage"}
+
+    from pxr import Sdf, UsdShade
+
+    from_shader = bool(req.target_node_path)
+    from_material = bool(req.material_path)
+    if from_shader == from_material:
+        raise HTTPException(status_code=400, detail="Specify either target_node_path or material_path")
+
+    _pxr_push_undo()
+
+    material_path = None
+    target_path = None
+    target_port = None
+
+    if from_shader:
+        target_path = "/" + str(req.target_node_path).lstrip("/")
+        tgt_prim = stage.GetPrimAtPath(Sdf.Path(target_path))
+        if not tgt_prim or not tgt_prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Target node not found: {target_path}")
+
+        tgt_shader = UsdShade.Shader(tgt_prim)
+        if not tgt_shader:
+            raise HTTPException(status_code=400, detail="Target node must be a shader")
+
+        target_port = str(req.target_input or "").strip()
+        if not target_port:
+            raise HTTPException(status_code=400, detail="Missing target_input")
+
+        inp = tgt_shader.GetInput(target_port)
+        if not inp:
+            return {"ok": True, "targetPath": target_path, "targetPort": target_port, "materialPath": None}
+
+        try:
+            inp.DisconnectSource()
+        except Exception:
+            pass
+
+        parent = tgt_prim.GetParent()
+        if parent and parent.IsValid() and UsdShade.Material(parent):
+            material_path = str(parent.GetPath())
+
+    else:
+        material_path = "/" + str(req.material_path).lstrip("/")
+        mat_prim = stage.GetPrimAtPath(Sdf.Path(material_path))
+        if not mat_prim or not mat_prim.IsValid():
+            raise HTTPException(status_code=404, detail=f"Material not found: {material_path}")
+
+        mat = UsdShade.Material(mat_prim)
+        if not mat:
+            raise HTTPException(status_code=400, detail="Target material path is not a UsdShade material")
+
+        out, out_name = _node_material_output(mat, req.material_output or "surface", create=False)
+        target_port = out_name
+        if out:
+            try:
+                out.DisconnectSource()
+            except Exception:
+                pass
+
+    await _conns.broadcast({
+        "event": "node_graph_changed",
+        "action": "disconnect",
+        "targetPath": target_path or material_path,
+        "targetPort": target_port,
+        "materialPath": material_path,
+    })
+    await _conns.broadcast({
+        "event": "material_changed",
+        "materialPath": material_path,
+        "node_graph": True,
+    })
+
+    return {
+        "ok": True,
+        "targetPath": target_path or material_path,
+        "targetPort": target_port,
+        "materialPath": material_path,
     }
 
 
