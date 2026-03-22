@@ -22,6 +22,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -994,7 +995,7 @@ async def stage_assets():
             if not os.path.normpath(lp).startswith(os.path.normpath(stage_dir)):
                 continue
             ext = os.path.splitext(lp)[1].lower()
-            if ext not in (".usd", ".usda", ".usdc", ".usdz"):
+            if ext not in (".usd", ".usda", ".usdc", ".usdz", ".mtlx"):
                 continue
             rel = os.path.relpath(lp, stage_dir).replace("\\", "/")
             assets_set.add(rel)
@@ -1005,7 +1006,7 @@ async def stage_assets():
                 full = os.path.join(dirpath, f)
                 rel = os.path.relpath(full, stage_dir).replace("\\", "/")
                 ext = os.path.splitext(f)[1].lower()
-                if ext in (".usd", ".usda", ".usdc", ".usdz"):
+                if ext in (".usd", ".usda", ".usdc", ".usdz", ".mtlx"):
                     assets_set.add(rel)
 
     assets_set.add(root_name)
@@ -1060,9 +1061,47 @@ async def stage_asset(path: str):
         raise HTTPException(status_code=404, detail=f"Asset not found: {path}")
 
     content = P(resolved).read_bytes()
+
+    # Normalize MaterialX reference args for usd-wasm compatibility when
+    # serving textual USDA layers (prevents target=usd on .mtlx references).
+    ext = os.path.splitext(resolved)[1].lower()
+    if ext in (".usd", ".usda") and content.startswith(b"#usda"):
+        try:
+            txt = content.decode("utf-8")
+
+            def _fix_mtlx_ref(m):
+                ref_path = m.group(1)
+                args = m.group(2) or ""
+                if not args:
+                    args = ":SDF_FORMAT_ARGS:target=mtlx"
+                elif re.search(r"target=usd", args, re.IGNORECASE):
+                    args = re.sub(r"target=usd", "target=mtlx", args, flags=re.IGNORECASE)
+                elif not re.search(r"target=", args, re.IGNORECASE):
+                    args = args + "&target=mtlx"
+                return f"@{ref_path}{args}@"
+
+            patched = re.sub(
+                r"@([^@\n\r]*?\.mtlx)(:SDF_FORMAT_ARGS:[^@\n\r]*)?@",
+                _fix_mtlx_ref,
+                txt,
+                flags=re.IGNORECASE,
+            )
+            if patched != txt:
+                content = patched.encode("utf-8")
+        except Exception:
+            pass
+
+    media = {
+        ".usda": "model/vnd.usda",
+        ".usd": "application/octet-stream",
+        ".usdc": "application/octet-stream",
+        ".usdz": "application/zip",
+        ".mtlx": "application/xml",
+    }.get(ext, "application/octet-stream")
+
     return Response(
         content=content,
-        media_type="application/octet-stream",
+        media_type=media,
         headers={"Cache-Control": "max-age=3600"},
     )
 
@@ -1125,6 +1164,7 @@ async def stage_layer(path: str):
         ".usdc": "application/octet-stream",
         ".usdz": "application/zip",
         ".usd":  "application/octet-stream",
+        ".mtlx": "application/xml",
         ".png":  "image/png",
         ".jpg":  "image/jpeg",
         ".jpeg": "image/jpeg",
