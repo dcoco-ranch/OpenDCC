@@ -4,12 +4,12 @@ Date: 2026-03-22
 Branch: `develop`
 
 ## Latest commits (newest first)
+- `e0a2e2c` perf(material): avoid full viewport reload on shader parameter changes
 - `05a7738` feat(usd-layering): author pxr edits in sidecar layer and scope material preview
 - `cf150e8` feat(material): add create-bind workflow and texture slot connections
 - `20ade4a` docs(handoff): include material bind+texture milestone commit
 - `77f1186` docs(handoff): add material editor milestone to latest commits
 - `8f7e8bc` feat(material-editor): add dedicated inspector tab with UsdPreviewSurface controls
-- `b455984` docs(handoff): refresh latest commit list after script editor upgrade
 
 ## Major delivered features
 - Timeline reads stage start/end/fps metadata.
@@ -27,6 +27,7 @@ Branch: `develop`
   - shader ID detection flags for MaterialX / vendor networks (read-only for now)
   - immediate viewport preview updates on numeric/color edits
   - preview scope safety: no global fallback tinting (prevents whole-stage accidental color preview)
+  - low-latency updates: material edits emit `material_changed` (no full viewport stage rebuild)
 - pxr mode non-destructive authoring layer:
   - on stage open, edits target a sidecar layer `*.opendcc_edits.usda`
   - root imported stage remains untouched
