@@ -802,7 +802,7 @@
           <span id="uv-stats" style="margin-left:auto;color:var(--text2);font-size:10px"></span>
         </div>
         <div id="uv-canvas-wrap">
-          <canvas id="uv-canvas"></canvas>
+          <canvas id="uv-canvas" tabindex="0"></canvas>
         </div>
       </div>
     </div>
@@ -2102,6 +2102,7 @@ const _nodeWorkbenchState = {
   signature: '',
   primPath: '',
   reqId: 0,
+  pendingFitOnOpen: false,
 };
 
 function _setNodeWorkbenchStatus(text) {
@@ -2131,9 +2132,19 @@ function _syncNodeWorkbenchUi() {
   }
 }
 
+function _focusNodeCanvas() {
+  var canvas = _nodeGraphUi && _nodeGraphUi.canvasEl ? _nodeGraphUi.canvasEl : document.getElementById('node-canvas');
+  if (!canvas) return;
+  if (!canvas.hasAttribute('tabindex')) canvas.setAttribute('tabindex', '0');
+  try { canvas.focus({ preventScroll: true }); } catch (_) { try { canvas.focus(); } catch (_) {} }
+}
+
 function toggleNodeWorkbench(forceState) {
-  var open = (typeof forceState === 'boolean') ? forceState : !_nodeWorkbenchState.open;
+  var wasOpen = !!_nodeWorkbenchState.open;
+  var open = (typeof forceState === 'boolean') ? forceState : !wasOpen;
   _nodeWorkbenchState.open = open;
+  if (open && !wasOpen) _nodeWorkbenchState.pendingFitOnOpen = true;
+  if (!open) _nodeWorkbenchState.pendingFitOnOpen = false;
   _syncNodeWorkbenchUi();
 
   if (!open) {
@@ -2141,11 +2152,13 @@ function toggleNodeWorkbench(forceState) {
     return;
   }
 
+  setTimeout(_focusNodeCanvas, 0);
+
   if (_selectedPaths.length) {
     var path = _selectedPaths[_selectedPaths.length - 1];
-    if (path) loadNodePanel(path, { forceRender: false });
+    if (path) loadNodePanel(path, { forceRender: false, fitOnOpen: !wasOpen, focusOnOpen: !wasOpen });
   } else {
-    loadNodePanel('', { forceRender: false });
+    loadNodePanel('', { forceRender: false, fitOnOpen: !wasOpen, focusOnOpen: !wasOpen });
   }
 }
 
@@ -2172,6 +2185,7 @@ const _uvWorkbenchState = {
   primvar: 'st',
   data: null,
   view: { scale: 1, tx: 0, ty: 0 },
+  pendingFitOnOpen: false,
 };
 
 let _uvInputBound = false;
@@ -2267,9 +2281,19 @@ function _bindUvCanvasInput() {
   canvas.addEventListener('dblclick', function() { fitUvView(); });
 }
 
+function _focusUvCanvas() {
+  var canvas = document.getElementById('uv-canvas');
+  if (!canvas) return;
+  if (!canvas.hasAttribute('tabindex')) canvas.setAttribute('tabindex', '0');
+  try { canvas.focus({ preventScroll: true }); } catch (_) { try { canvas.focus(); } catch (_) {} }
+}
+
 function toggleUvWorkbench(forceState) {
-  var open = (typeof forceState === 'boolean') ? forceState : !_uvWorkbenchState.open;
+  var wasOpen = !!_uvWorkbenchState.open;
+  var open = (typeof forceState === 'boolean') ? forceState : !wasOpen;
   _uvWorkbenchState.open = open;
+  if (open && !wasOpen) _uvWorkbenchState.pendingFitOnOpen = true;
+  if (!open) _uvWorkbenchState.pendingFitOnOpen = false;
   _syncUvWorkbenchUi();
 
   if (!open) {
@@ -2278,11 +2302,13 @@ function toggleUvWorkbench(forceState) {
   }
 
   _bindUvCanvasInput();
+  setTimeout(_focusUvCanvas, 0);
+
   if (_selectedPaths.length) {
     var path = _selectedPaths[_selectedPaths.length - 1];
-    if (path) loadUvPanel(path, { fit: true });
+    if (path) loadUvPanel(path, { fit: false });
   } else {
-    loadUvPanel('', { fit: true });
+    loadUvPanel('', { fit: false });
   }
 }
 
@@ -2351,9 +2377,12 @@ function initViewportPicking() {
   var mouse = new T.Vector2();
 
   // Use canvas directly — avoids event conflicts with TransformControls
-  var canvas = document.querySelector('#viewport-wrap canvas');
-  if (!canvas) {
-    console.warn('[pick] canvas not found yet, retrying...');
+  // IMPORTANT: bind picking to the Three.js viewport canvas only.
+  // UV editor also owns a canvas inside #viewport-wrap; using a broad selector
+  // would bind events to the wrong (hidden) canvas and break viewport picking.
+  var canvas = document.querySelector('#viewport-wrap > canvas');
+  if (!canvas || canvas.id === 'uv-canvas') {
+    console.warn('[pick] viewport canvas not found yet, retrying...');
     setTimeout(initViewportPicking, 500);
     return;
   }
@@ -3295,8 +3324,14 @@ async function loadUvPanel(primPath, opts) {
   _uvWorkbenchState.meshPath = String(d.meshPath || primPath || '');
   _uvWorkbenchState.data = d;
 
-  if (opts.fit || !Number.isFinite(_uvWorkbenchState.view.scale) || _uvWorkbenchState.view.scale <= 0) {
+  var shouldFit = !!opts.fit
+    || !!_uvWorkbenchState.pendingFitOnOpen
+    || !Number.isFinite(_uvWorkbenchState.view.scale)
+    || _uvWorkbenchState.view.scale <= 0;
+
+  if (shouldFit) {
     fitUvView();
+    _uvWorkbenchState.pendingFitOnOpen = false;
   } else {
     renderUvPanel();
   }
@@ -3997,8 +4032,9 @@ async function loadMaterialPanel(primPath, timeCode) {
     openNodeBtn.textContent = 'Open Node Workbench';
     openNodeBtn.style.cssText = 'padding:2px 8px;font-size:11px';
     openNodeBtn.addEventListener('click', function() {
+      var wasOpen = !!_nodeWorkbenchState.open;
       if (typeof toggleNodeWorkbench === 'function') toggleNodeWorkbench(true);
-      loadNodePanel(primPath, { forceRender: true });
+      loadNodePanel(primPath, { forceRender: true, fitOnOpen: !wasOpen, focusOnOpen: !wasOpen });
     });
 
     var bindBtn = document.createElement('button');
@@ -4771,6 +4807,69 @@ function _nodeUpdateGridTransform() {
   overlay.style.backgroundPosition = ox + 'px ' + oy + 'px, ' + ox + 'px ' + oy + 'px, ' + ox + 'px ' + oy + 'px, ' + ox + 'px ' + oy + 'px';
 }
 
+function _nodeFitGraphView(opts) {
+  opts = opts || {};
+
+  var c = _nodeGraphUi.canvas;
+  var g = _nodeGraphUi.graph;
+  var wrap = document.getElementById('node-canvas-wrap');
+  if (!c || !g || !c.ds || !wrap) return;
+
+  var nodes = Array.isArray(g._nodes) ? g._nodes : [];
+  if (!nodes.length) {
+    if (opts.focusCanvas) _focusNodeCanvas();
+    return;
+  }
+
+  var minX = Infinity, minY = Infinity;
+  var maxX = -Infinity, maxY = -Infinity;
+
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (!n || !Array.isArray(n.pos)) continue;
+    var nx = Number(n.pos[0] || 0);
+    var ny = Number(n.pos[1] || 0);
+    var sz = Array.isArray(n.size) ? n.size : [160, 90];
+    var nw = Number(sz[0] || 160);
+    var nh = Number(sz[1] || 90);
+
+    if (nx < minX) minX = nx;
+    if (ny < minY) minY = ny;
+    if (nx + nw > maxX) maxX = nx + nw;
+    if (ny + nh > maxY) maxY = ny + nh;
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    if (opts.focusCanvas) _focusNodeCanvas();
+    return;
+  }
+
+  var bw = Math.max(1, maxX - minX);
+  var bh = Math.max(1, maxY - minY);
+
+  var vw = Math.max(1, wrap.clientWidth || 1);
+  var vh = Math.max(1, wrap.clientHeight || 1);
+  var pad = 34;
+
+  var sx = (vw - pad * 2) / bw;
+  var sy = (vh - pad * 2) / bh;
+  var scale = Math.min(sx, sy);
+  if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+  scale = Math.max(0.35, Math.min(2.2, scale));
+
+  c.ds.scale = scale;
+
+  var cx = (minX + maxX) * 0.5;
+  var cy = (minY + maxY) * 0.5;
+  c.ds.offset[0] = (vw * 0.5) / scale - cx;
+  c.ds.offset[1] = (vh * 0.5) / scale - cy;
+
+  _nodeUpdateGridTransform();
+  c.setDirty(true, true);
+
+  if (opts.focusCanvas) _focusNodeCanvas();
+}
+
 function _nodeSetToolbarEnabled(enabled) {
   var sel = document.getElementById('node-create-shader');
   var name = document.getElementById('node-create-name');
@@ -4854,6 +4953,7 @@ function _nodeEnsureWorkbenchLayout(host) {
   wrap.appendChild(gridOverlay);
   var canvas = document.createElement('canvas');
   canvas.id = 'node-canvas';
+  canvas.tabIndex = 0;
   wrap.appendChild(canvas);
 
   var inspector = document.createElement('div');
@@ -4932,15 +5032,7 @@ function _nodeEnsureWorkbenchLayout(host) {
 
   var fitBtn = toolbar.querySelector('#node-fit-btn');
   if (fitBtn) fitBtn.addEventListener('click', function() {
-    var c = _nodeGraphUi.canvas;
-    if (!c) return;
-    try {
-      if (c.resetZoom) c.resetZoom();
-      if (c.centerOnNode && _nodeGetSelectedLiteNode()) c.centerOnNode(_nodeGetSelectedLiteNode());
-      if (c.ds) c.ds.scale = Math.max(0.45, Math.min(1.25, Number(c.ds.scale || 1)));
-    } catch (_) {}
-    _nodeUpdateGridTransform();
-    c.setDirty(true, true);
+    _nodeFitGraphView({ focusCanvas: true });
   });
 
   _nodeSyncGridUi();
@@ -5305,13 +5397,29 @@ async function loadNodePanel(primPath, opts) {
   }
 
   var sig = _nodeGraphSignature(path, data);
+  var needFitOnOpen = !!opts.fitOnOpen || !!_nodeWorkbenchState.pendingFitOnOpen;
+
   if (!opts.forceRender && sig === _nodeWorkbenchState.signature) {
+    if (needFitOnOpen) {
+      _nodeFitGraphView({ focusCanvas: !!opts.focusOnOpen });
+      _nodeWorkbenchState.pendingFitOnOpen = false;
+    } else if (opts.focusOnOpen) {
+      _focusNodeCanvas();
+    }
     _setNodeWorkbenchStatus('Up to date');
     return;
   }
 
   _nodeWorkbenchState.signature = sig;
   _renderNodePanelContent(host, path, data);
+
+  if (needFitOnOpen) {
+    _nodeFitGraphView({ focusCanvas: !!opts.focusOnOpen });
+    _nodeWorkbenchState.pendingFitOnOpen = false;
+  } else if (opts.focusOnOpen) {
+    _focusNodeCanvas();
+  }
+
   _setNodeWorkbenchStatus('Ready');
 }
 
