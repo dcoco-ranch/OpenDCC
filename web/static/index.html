@@ -2937,8 +2937,10 @@ async function _attachGizmoForPrim(primPath, reqId) {
 
   var pivot = null;
   if (sp) {
-    if (Array.isArray(sp.pivot) && sp.pivot.length >= 3) pivot = sp.pivot;
-    else if (sp.bbox && Array.isArray(sp.bbox.center) && sp.bbox.center.length >= 3) pivot = sp.bbox.center;
+    // For container Xforms, world pivot can be identity while geometry is offset;
+    // prefer world bbox center when available.
+    if (sp.bbox && Array.isArray(sp.bbox.center) && sp.bbox.center.length >= 3) pivot = sp.bbox.center;
+    else if (Array.isArray(sp.pivot) && sp.pivot.length >= 3) pivot = sp.pivot;
   }
 
   if (pivot && typeof window._attachGizmoToPivot === 'function') {
