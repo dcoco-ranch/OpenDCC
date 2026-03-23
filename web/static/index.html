@@ -1635,6 +1635,64 @@ _applyTimelineRange(_startTimeCode, _endTimeCode, _timeCodesPerSecond, false);
 // can determine the file format without an HTTP round-trip.
 const STAGE_VPATH = '/scene.usda';
 
+// Cache to avoid re-fetching hundreds of static assets on incremental reloads
+// (undo/redo/edit layer updates). We only refresh compose layers in that case.
+let _fsComposeCache = {
+  primed: false,
+  rootLayer: '',
+  assetKey: '',
+};
+
+function _assetKeyOf(list) {
+  if (!Array.isArray(list) || !list.length) return '';
+  return list.map(function(x) { return String(x || ''); }).join('\n');
+}
+
+async function _fetchStageAssetBytes(assetPath) {
+  const r = await fetch('/api/stage/asset?path=' + encodeURIComponent(assetPath), { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + assetPath);
+  const buf = await r.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+function _writeAssetToWasmFs(assetPath, bytes) {
+  const rel = String(assetPath || '').replace(/^\/+/, '');
+  if (!rel) return;
+
+  const slash = rel.lastIndexOf('/');
+  const dir = slash > 0 ? ('/' + rel.substring(0, slash)) : '/';
+  const name = slash >= 0 ? rel.substring(slash + 1) : rel;
+
+  try { USD.FS_createPath('/', dir.replace(/^\//, ''), true, true); } catch (_) {}
+  try { USD.FS_unlink('/' + rel); } catch (_) {}
+  USD.FS_createDataFile(dir || '/', name, bytes, true, true, true);
+
+  // MaterialX texture path compatibility aliases:
+  // many ND_image nodes use paths like "tex/foo.jpg".
+  // Mirror files under /tex/... in WASM FS to satisfy driver.getFile lookups.
+  const lower = rel.toLowerCase();
+  const texPos = lower.indexOf('/tex/');
+  if (texPos >= 0) {
+    const texRel = rel.substring(texPos + 1); // "tex/..."
+    const aliasFull = '/' + texRel;
+    const aliasSlash = aliasFull.lastIndexOf('/');
+    const aliasDir = aliasSlash > 0 ? aliasFull.substring(0, aliasSlash) : '/';
+    const aliasName = aliasSlash > 0 ? aliasFull.substring(aliasSlash + 1) : texRel;
+
+    try { USD.FS_createPath('/', aliasDir.replace(/^\//, ''), true, true); } catch (_) {}
+    try { USD.FS_unlink(aliasFull); } catch (_) {}
+    try { USD.FS_createDataFile(aliasDir || '/', aliasName, bytes, true, true, true); } catch (_) {}
+
+    // Optional basename alias for delegates that request only filename
+    const baseAlias = '/' + aliasName;
+    try {
+      let exists = false;
+      try { exists = !!USD.FS_analyzePath(baseAlias).exists; } catch (_) {}
+      if (!exists) USD.FS_createDataFile('/', aliasName, bytes, true, true, true);
+    } catch (_) {}
+  }
+}
+
 function _normalizeUpAxisToken(raw) {
   if (raw === null || raw === undefined) return 'y';
   if (typeof raw === 'number' && Number.isFinite(raw)) {
@@ -1765,70 +1823,60 @@ async function loadStage(reframe = true) {
 
   let usda;
   if (stageInfo.rootLayer && stageInfo.assets.length > 0) {
-    // ── Composition mode: pre-load ALL assets into WASM FS ──────────────
-    if (reframe) setVpMsg(`Loading ${stageInfo.count} USD assets…`);
-    console.log(`[loadStage] composition mode: ${stageInfo.count} assets`);
+    // ── Composition mode: pre-load assets into WASM FS ─────────────────
+    const assets = Array.isArray(stageInfo.assets) ? stageInfo.assets : [];
+    const assetKey = _assetKeyOf(assets);
+    const canReuseCachedAssets = (
+      !reframe
+      && _fsComposeCache.primed
+      && _fsComposeCache.rootLayer === stageInfo.rootLayer
+      && _fsComposeCache.assetKey === assetKey
+    );
 
-    // Clean WASM FS
-    try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
-    try { USD.FS_rmdir('/assets'); } catch (_) {}
+    console.log(`[loadStage] composition mode: ${stageInfo.count} assets${canReuseCachedAssets ? ' (cached reuse)' : ''}`);
 
-    // Create directory structure and fetch all assets
-    const dirs = new Set();
-    for (const assetPath of stageInfo.assets) {
-      const parts = assetPath.split('/');
-      for (let i = 1; i < parts.length; i++) {
-        dirs.add(parts.slice(0, i).join('/'));
-      }
-    }
-    for (const dir of [...dirs].sort()) {
-      try { USD.FS_createPath('/', dir, true, true); } catch (_) {}
-    }
+    if (!canReuseCachedAssets) {
+      if (reframe) setVpMsg(`Loading ${stageInfo.count} USD assets…`);
 
-    // Fetch and write all assets in parallel (batched)
-    const batchSize = 10;
-    const assets = stageInfo.assets;
-    for (let i = 0; i < assets.length; i += batchSize) {
-      const batch = assets.slice(i, i + batchSize);
-      await Promise.all(batch.map(async (assetPath) => {
-        try {
-          const r = await fetch('/api/stage/asset?path=' + encodeURIComponent(assetPath));
-          if (!r.ok) { console.warn('[loadStage] failed to fetch:', assetPath); return; }
-          const buf = await r.arrayBuffer();
-          const bytes = new Uint8Array(buf);
-          const dir = '/' + assetPath.substring(0, assetPath.lastIndexOf('/'));
-          const name = assetPath.substring(assetPath.lastIndexOf('/') + 1);
-          try { USD.FS_unlink('/' + assetPath); } catch (_) {}
-          USD.FS_createDataFile(dir || '/', name, bytes, true, true, true);
+      // Clean stale virtual root (keep other cached files untouched)
+      try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
 
-          // MaterialX texture path compatibility aliases:
-          // many ND_image nodes use paths like "tex/foo.jpg".
-          // Mirror files under /tex/... in WASM FS to satisfy driver.getFile lookups.
-          const lower = String(assetPath || '').toLowerCase();
-          const texPos = lower.indexOf('/tex/');
-          if (texPos >= 0) {
-            const texRel = assetPath.substring(texPos + 1); // "tex/..."
-            const aliasFull = '/' + texRel;
-            const slash = aliasFull.lastIndexOf('/');
-            const aliasDir = slash > 0 ? aliasFull.substring(0, slash) : '/';
-            const aliasName = slash > 0 ? aliasFull.substring(slash + 1) : texRel;
-            try { USD.FS_createPath('/', aliasDir.replace(/^\//, ''), true, true); } catch (_) {}
-            try { USD.FS_unlink(aliasFull); } catch (_) {}
-            try { USD.FS_createDataFile(aliasDir || '/', aliasName, bytes, true, true, true); } catch (_) {}
-
-            // Optional basename alias for delegates that request only filename
-            const baseAlias = '/' + aliasName;
-            try {
-              let exists = false;
-              try { exists = !!USD.FS_analyzePath(baseAlias).exists; } catch (_) {}
-              if (!exists) USD.FS_createDataFile('/', aliasName, bytes, true, true, true);
-            } catch (_) {}
+      const batchSize = 10;
+      for (let i = 0; i < assets.length; i += batchSize) {
+        const batch = assets.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (assetPath) => {
+          try {
+            const bytes = await _fetchStageAssetBytes(assetPath);
+            _writeAssetToWasmFs(assetPath, bytes);
+          } catch (e) {
+            console.warn('[loadStage] asset error:', assetPath, e && e.message ? e.message : e);
           }
-        } catch (e) { console.warn('[loadStage] asset error:', assetPath, e.message); }
-      }));
-      if (reframe) {
-        const pct = Math.min(100, Math.round((i + batchSize) / assets.length * 100));
-        setVpMsg(`Loading assets… ${pct}%`);
+        }));
+
+        if (reframe && assets.length > 0) {
+          const pct = Math.min(100, Math.round((i + batchSize) / assets.length * 100));
+          setVpMsg(`Loading assets… ${pct}%`);
+        }
+      }
+
+      _fsComposeCache = {
+        primed: true,
+        rootLayer: stageInfo.rootLayer,
+        assetKey: assetKey,
+      };
+    } else {
+      // Incremental refresh path: only refresh compose layers (small, mostly edit layer).
+      const refreshLayers = (Array.isArray(stageInfo.composeLayers) && stageInfo.composeLayers.length > 0)
+        ? stageInfo.composeLayers.slice()
+        : [stageInfo.rootLayer];
+
+      for (const layerRel of refreshLayers) {
+        try {
+          const bytes = await _fetchStageAssetBytes(layerRel);
+          _writeAssetToWasmFs(layerRel, bytes);
+        } catch (e) {
+          console.warn('[loadStage] compose refresh error:', layerRel, e && e.message ? e.message : e);
+        }
       }
     }
 
@@ -1855,6 +1903,7 @@ async function loadStage(reframe = true) {
       }
     }
   } else {
+    _fsComposeCache = { primed: false, rootLayer: '', assetKey: '' };
     // ── Simple mode: in-memory stage, just fetch USDA ───────────────────
     try {
       const r = await fetch('/api/stage/export.usda', { cache: 'no-store' });
@@ -2114,6 +2163,7 @@ let _matPanelRefreshTimer = null;
 let _nodePanelRefreshTimer = null;
 let _uvPanelRefreshTimer = null;
 let _suppressMatWsUntil = 0;
+let _suppressSceneWsUntil = 0;
 
 const _nodeWorkbenchState = {
   open: false,
@@ -2794,9 +2844,16 @@ function connectWS() {
       }).catch(function(e) {});
     }
     if (msg.event === 'scene_changed') {
-      setStatus('Stage updated');
       // Refresh outliner immediately (fast — just REST calls)
       refreshPrims();
+
+      // Avoid duplicate reload when command already scheduled a local fast reload.
+      if (Date.now() < _suppressSceneWsUntil) {
+        _scheduleUvPanelRefresh();
+        return;
+      }
+
+      setStatus('Stage updated');
       // Debounce viewport reload (slow — full WASM driver rebuild)
       _scheduleViewportReload();
       _scheduleUvPanelRefresh();
@@ -3516,6 +3573,7 @@ async function toggleVisibilitySelected() { if (!_selectedPaths.length) return;
 async function reparentPrim(child, parent) { await api('/api/prims/parent', 'POST', { paths: [child], parent_path: parent }); setStatus('Reparented'); }
 async function cmdUndo() {
   window._gizmoJustDragged = false;
+  _suppressSceneWsUntil = Date.now() + 1200;
   var res = await api('/api/undo', 'POST');
   if (!res || res.ok !== true) {
     setStatus('Undo: nothing to undo', true);
@@ -3531,6 +3589,7 @@ async function cmdUndo() {
 
 async function cmdRedo() {
   window._gizmoJustDragged = false;
+  _suppressSceneWsUntil = Date.now() + 1200;
   var res = await api('/api/redo', 'POST');
   if (!res || res.ok !== true) {
     setStatus('Redo: nothing to redo', true);
