@@ -1330,8 +1330,19 @@ function attachGizmo(obj) {
 
 function attachGizmoToPivot(pivot, primPath) {
   if (!Array.isArray(pivot) || pivot.length < 3) return false;
+
+  // Spatial data comes from USD world. Convert through usdRoot transform
+  // (up-axis remap) to get Three.js world coordinates.
+  var p = new THREE.Vector3(Number(pivot[0]) || 0, Number(pivot[1]) || 0, Number(pivot[2]) || 0);
+  try {
+    if (window._usdRoot) {
+      window._usdRoot.updateMatrixWorld(true);
+      p.applyMatrix4(window._usdRoot.matrixWorld);
+    }
+  } catch (_) {}
+
   _gizmoProxy.visible = true;
-  _gizmoProxy.position.set(Number(pivot[0]) || 0, Number(pivot[1]) || 0, Number(pivot[2]) || 0);
+  _gizmoProxy.position.copy(p);
   _gizmoProxy.rotation.set(0, 0, 0);
   _gizmoProxy.scale.set(1, 1, 1);
   _gizmoProxy._primPath = String(primPath || '');
@@ -1472,6 +1483,17 @@ function _objMatchesPrimPath(obj, primPath) {
   return false;
 }
 
+function _usdPointToThreeWorldForFrame(x, y, z) {
+  var p = new THREE.Vector3(Number(x) || 0, Number(y) || 0, Number(z) || 0);
+  try {
+    if (usdRoot) {
+      usdRoot.updateMatrixWorld(true);
+      p.applyMatrix4(usdRoot.matrixWorld);
+    }
+  } catch (_) {}
+  return p;
+}
+
 window.frameSelection = function() {
   var selected = [];
   if (typeof window.getSelectedPaths === 'function') selected = window.getSelectedPaths();
@@ -1498,8 +1520,10 @@ window.frameSelection = function() {
       var sp = window._spatialPrimCache[selected[si]];
       if (!sp || !sp.bbox || !Array.isArray(sp.bbox.min) || !Array.isArray(sp.bbox.max)) continue;
       try {
-        box.expandByPoint(new THREE.Vector3(Number(sp.bbox.min[0]) || 0, Number(sp.bbox.min[1]) || 0, Number(sp.bbox.min[2]) || 0));
-        box.expandByPoint(new THREE.Vector3(Number(sp.bbox.max[0]) || 0, Number(sp.bbox.max[1]) || 0, Number(sp.bbox.max[2]) || 0));
+        var pmin = _usdPointToThreeWorldForFrame(sp.bbox.min[0], sp.bbox.min[1], sp.bbox.min[2]);
+        var pmax = _usdPointToThreeWorldForFrame(sp.bbox.max[0], sp.bbox.max[1], sp.bbox.max[2]);
+        box.expandByPoint(pmin);
+        box.expandByPoint(pmax);
         hasMesh = true;
       } catch (_) {}
     }
@@ -2791,6 +2815,18 @@ function highlightSelectedRows() {
 
 window._spatialPrimCache = window._spatialPrimCache || Object.create(null);
 
+function _usdPointToThreeWorld(x, y, z) {
+  var T = window.THREE || THREE;
+  var p = new T.Vector3(Number(x) || 0, Number(y) || 0, Number(z) || 0);
+  try {
+    if (window._usdRoot) {
+      window._usdRoot.updateMatrixWorld(true);
+      p.applyMatrix4(window._usdRoot.matrixWorld);
+    }
+  } catch (_) {}
+  return p;
+}
+
 async function _fetchPrimSpatial(path) {
   var key = String(path || '').replace(/^\//, '');
   if (!key) return null;
@@ -2924,15 +2960,9 @@ async function _attachGizmoForPrim(primPath, reqId) {
   var hPrim = _findBestObjectForPrimPathScored(primPath);
   var best = (hAttach.score >= hPrim.score) ? hAttach : hPrim;
 
-  if (best.obj && best.score >= USABLE) {
-    best.obj._primPath = primPath;
-    window._attachGizmo(best.obj);
-    console.log('[gizmo] attached to', primPath, 'via', attachPath, best.obj.type, best.obj.name || '(unnamed)', 'score=' + best.score);
-    return;
-  }
-
   // Spatial fallback from USD (pivot/bbox) for Xform/Scope or ambiguous mesh matches.
-  var sp = await _fetchPrimSpatial(primPath);
+  var sp = window._spatialPrimCache ? window._spatialPrimCache[primPath] : null;
+  if (!sp) sp = await _fetchPrimSpatial(primPath);
   if (reqId !== _gizmoAttachReqId) return;
 
   var pivot = null;
@@ -2941,6 +2971,31 @@ async function _attachGizmoForPrim(primPath, reqId) {
     // prefer world bbox center when available.
     if (sp.bbox && Array.isArray(sp.bbox.center) && sp.bbox.center.length >= 3) pivot = sp.bbox.center;
     else if (Array.isArray(sp.pivot) && sp.pivot.length >= 3) pivot = sp.pivot;
+  }
+
+  if (best.obj && best.score >= USABLE) {
+    var acceptMesh = true;
+
+    // Guard against wrong-name collisions: mesh center must be near USD spatial center
+    // unless score is very strong (full-path-like match).
+    if (best.score < 170 && sp && sp.bbox && Array.isArray(sp.bbox.center)) {
+      try {
+        var meshPos = new (window.THREE || THREE).Vector3();
+        best.obj.getWorldPosition(meshPos);
+        var c = _usdPointToThreeWorld(sp.bbox.center[0], sp.bbox.center[1], sp.bbox.center[2]);
+        var d = meshPos.distanceTo(c);
+        var r = Number(sp.bbox.radius || 0);
+        var tol = Math.max(0.35, r * 1.2);
+        if (d > tol) acceptMesh = false;
+      } catch (_) {}
+    }
+
+    if (acceptMesh) {
+      best.obj._primPath = primPath;
+      window._attachGizmo(best.obj);
+      console.log('[gizmo] attached to', primPath, 'via', attachPath, best.obj.type, best.obj.name || '(unnamed)', 'score=' + best.score);
+      return;
+    }
   }
 
   if (pivot && typeof window._attachGizmoToPivot === 'function') {
