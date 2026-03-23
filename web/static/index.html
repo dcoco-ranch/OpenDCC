@@ -1250,6 +1250,10 @@ function _renderViewports() {
 }
 
 window._getPickContextAtClientPoint = function(clientX, clientY) {
+  // Keep rects/cameras fresh at pick time (handles resize/layout timing)
+  _syncAuxCameras();
+  _viewRects = _buildViewRects();
+
   const found = _findViewAtClientPoint(clientX, clientY);
   if (!found) return null;
   const v = found.view;
@@ -2377,15 +2381,27 @@ function initViewportPicking() {
   var mouse = new T.Vector2();
 
   // Use canvas directly — avoids event conflicts with TransformControls
-  // IMPORTANT: bind picking to the Three.js viewport canvas only.
-  // UV editor also owns a canvas inside #viewport-wrap; using a broad selector
-  // would bind events to the wrong (hidden) canvas and break viewport picking.
-  var canvas = document.querySelector('#viewport-wrap > canvas');
-  if (!canvas || canvas.id === 'uv-canvas') {
+  // IMPORTANT: bind picking to the renderer DOM canvas only.
+  // UV editor also owns a canvas; never bind to it.
+  var canvas = (window._threeRenderer && window._threeRenderer.domElement)
+    ? window._threeRenderer.domElement
+    : null;
+
+  if (!canvas || !canvas.isConnected || canvas.id === 'uv-canvas') {
+    canvas = document.querySelector('#viewport-wrap > canvas:not(#uv-canvas)');
+  }
+
+  if (!canvas) {
     console.warn('[pick] viewport canvas not found yet, retrying...');
     setTimeout(initViewportPicking, 500);
     return;
   }
+
+  if (canvas._opendccPickBound) {
+    console.log('[viewport] picking already initialized on canvas');
+    return;
+  }
+  canvas._opendccPickBound = true;
 
   var _downX = 0, _downY = 0;
 
@@ -2406,62 +2422,115 @@ function initViewportPicking() {
       ? window._getPickContextAtClientPoint(ev.clientX, ev.clientY)
       : null;
 
-    if (pickCtx) {
-      mouse.x = pickCtx.ndcX;
-      mouse.y = pickCtx.ndcY;
-    } else {
-      var rect = canvas.getBoundingClientRect();
-      mouse.x =  ((ev.clientX - rect.left) / rect.width)  * 2 - 1;
-      mouse.y = -((ev.clientY - rect.top)  / rect.height) * 2 + 1;
+    var rect = canvas.getBoundingClientRect();
+    var fullNdcX =  ((ev.clientX - rect.left) / Math.max(1, rect.width))  * 2 - 1;
+    var fullNdcY = -((ev.clientY - rect.top)  / Math.max(1, rect.height)) * 2 + 1;
+
+    var usdRoot = window._usdRoot;
+    var mainCam = window._threeCamera;
+    if (!mainCam || !usdRoot) { console.log('[pick] no cam/root'); return; }
+
+    function _raycastFrom(ndcX, ndcY, cam, roots) {
+      if (!cam || !roots || !roots.length) return [];
+      mouse.x = ndcX;
+      mouse.y = ndcY;
+      raycaster.setFromCamera(mouse, cam);
+      try { return raycaster.intersectObjects(roots, true) || []; }
+      catch (_) { return []; }
     }
 
-    var cam = (pickCtx && pickCtx.camera) ? pickCtx.camera : window._threeCamera;
-    var usdRoot = window._usdRoot;
-    if (!cam || !usdRoot) { console.log('[pick] no cam/root'); return; }
+    var tries = [];
+    if (pickCtx && pickCtx.camera) {
+      tries.push({ tag: 'ctx', cam: pickCtx.camera, ndcX: pickCtx.ndcX, ndcY: pickCtx.ndcY });
+    }
+    tries.push({ tag: 'main', cam: mainCam, ndcX: fullNdcX, ndcY: fullNdcY });
 
-    raycaster.setFromCamera(mouse, cam);
-    var hits = raycaster.intersectObjects(usdRoot.children, true);
-    console.log('[pick] click at', mouse.x.toFixed(2), mouse.y.toFixed(2),
-                '→ hits:', hits.length);
+    var sceneRoots = [];
+    if (window._threeScene && Array.isArray(window._threeScene.children)) {
+      sceneRoots = window._threeScene.children.slice();
+    }
 
-    if (hits.length > 0) {
-      var obj = hits[0].object;
-      var primPath = '';
-      console.log('[pick] hit:', obj.name, obj.type, 'userData:', JSON.stringify(obj.userData),
-                  'parent:', obj.parent?.name);
-      while (obj && obj !== usdRoot) {
-        if (obj.userData && obj.userData.path) { primPath = obj.userData.path; break; }
-        if (obj.name && obj.name.startsWith('/')) { primPath = obj.name; break; }
-        if (obj.name && obj.name.length > 0) {
-          // Hydra delegate uses last path segment as mesh name.
-          // Keep short name — will resolve via /api/prims/find below
-          primPath = obj.name;
+    var hits = [];
+    var used = null;
+    for (var ti = 0; ti < tries.length; ti++) {
+      var t = tries[ti];
+      var h = _raycastFrom(t.ndcX, t.ndcY, t.cam, usdRoot.children);
+      if (h && h.length) {
+        hits = h;
+        used = t.tag + ':usdRoot';
+        break;
+      }
+    }
+
+    if (!hits.length && sceneRoots.length) {
+      for (var tj = 0; tj < tries.length; tj++) {
+        var t2 = tries[tj];
+        var h2 = _raycastFrom(t2.ndcX, t2.ndcY, t2.cam, sceneRoots);
+        if (h2 && h2.length) {
+          hits = h2;
+          used = t2.tag + ':scene';
           break;
         }
-        obj = obj.parent;
       }
-      if (primPath) {
-        // Resolve short names via API (Hydra strips paths to last segment)
-        if (!primPath.startsWith('/')) {
-          var resolved = await api('/api/prims/find?name=' + encodeURIComponent(primPath));
-          if (resolved.matches && resolved.matches.length > 0) {
-            primPath = resolved.matches[0];
-          } else {
-            primPath = '/World/' + primPath; // fallback
-          }
+    }
+
+    var logX = (pickCtx && pickCtx.camera) ? pickCtx.ndcX : fullNdcX;
+    var logY = (pickCtx && pickCtx.camera) ? pickCtx.ndcY : fullNdcY;
+    console.log('[pick] click at', Number(logX).toFixed(2), Number(logY).toFixed(2),
+                '→ hits:', hits.length, used ? '(' + used + ')' : '');
+
+    if (hits.length > 0) {
+      var chosenHit = null;
+      for (var hi = 0; hi < hits.length; hi++) {
+        var ho = hits[hi] && hits[hi].object;
+        if (!ho) continue;
+        if (ho.isMesh || (ho.userData && ho.userData.path) || (ho.name && (ho.name.startsWith('/') || ho.name.length > 0))) {
+          chosenHit = hits[hi];
+          break;
         }
-        console.log('[pick] selected:', primPath);
-        _selectedPaths = [primPath];
-        api('/api/selection', 'POST', { paths: _selectedPaths, replace: true });
-        highlightSelectedRows();
-        selectPrimByPath(primPath);
-        setStatus('Selected: ' + primPath);
-        var meshObj = hits[0].object;
-        meshObj._primPath = primPath;
-        if (window._attachGizmo) window._attachGizmo(meshObj);
-        return;
-      } else {
-        console.log('[pick] hit object but no prim path found');
+      }
+
+      if (chosenHit) {
+        var obj = chosenHit.object;
+        var primPath = '';
+        console.log('[pick] hit:', obj.name, obj.type, 'userData:', JSON.stringify(obj.userData),
+                    'parent:', obj.parent?.name);
+
+        var walk = obj;
+        while (walk) {
+          if (walk.userData && walk.userData.path) { primPath = walk.userData.path; break; }
+          if (walk.name && walk.name.startsWith('/')) { primPath = walk.name; break; }
+          if (walk.name && walk.name.length > 0 && walk !== usdRoot) {
+            // Hydra delegate can keep only last path segment on mesh names.
+            primPath = walk.name;
+            break;
+          }
+          walk = walk.parent;
+        }
+
+        if (primPath) {
+          // Resolve short names via API (Hydra strips paths to last segment)
+          if (!primPath.startsWith('/')) {
+            var resolved = await api('/api/prims/find?name=' + encodeURIComponent(primPath));
+            if (resolved.matches && resolved.matches.length > 0) {
+              primPath = resolved.matches[0];
+            } else {
+              primPath = '/World/' + primPath; // fallback
+            }
+          }
+          console.log('[pick] selected:', primPath);
+          _selectedPaths = [primPath];
+          api('/api/selection', 'POST', { paths: _selectedPaths, replace: true });
+          highlightSelectedRows();
+          selectPrimByPath(primPath);
+          setStatus('Selected: ' + primPath);
+          var meshObj = chosenHit.object;
+          meshObj._primPath = primPath;
+          if (window._attachGizmo) window._attachGizmo(meshObj);
+          return;
+        } else {
+          console.log('[pick] hit object but no prim path found');
+        }
       }
     }
     // Clicked empty space → deselect + detach gizmo
