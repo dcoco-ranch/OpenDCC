@@ -1428,16 +1428,26 @@ function _frameBox(box, logTag, preserveViewDirection) {
 
 function _objMatchesPrimPath(obj, primPath) {
   if (!obj || !primPath) return false;
+  var p = String(primPath || '');
+  if (!p) return false;
+
   var n = String(obj.name || '');
   var ud = obj.userData || {};
-  return (
-    ud.path === primPath ||
-    obj._primPath === primPath ||
-    n === primPath ||
-    n.endsWith(primPath) ||
-    ('/' + n) === primPath ||
-    n === primPath.split('/').pop()
-  );
+  var up = (ud && typeof ud.path === 'string') ? String(ud.path) : '';
+  var op = (typeof obj._primPath === 'string') ? String(obj._primPath) : '';
+  var last = p.split('/').pop();
+
+  // Strong path matches
+  if (up === p || op === p || n === p) return true;
+
+  // Descendant / ancestor matches (Xform/Scope selections)
+  if (up && (up.startsWith(p + '/') || p.startsWith(up + '/'))) return true;
+  if (op && (op.startsWith(p + '/') || p.startsWith(op + '/'))) return true;
+
+  // Name-based fallbacks (Hydra may expose short mesh names only)
+  if (n && (n === last || ('/' + n) === p || p.endsWith('/' + n) || n.endsWith(p))) return true;
+
+  return false;
 }
 
 window.frameSelection = function() {
@@ -1459,6 +1469,12 @@ window.frameSelection = function() {
       }
     }
   });
+
+  // Fallback: if selection path mapping is ambiguous, at least frame current gizmo target.
+  if (!hasMesh && window._gizmo && window._gizmo.object && window._gizmo.object.isMesh) {
+    box.expandByObject(window._gizmo.object);
+    hasMesh = true;
+  }
 
   if (!hasMesh) return false;
   return _frameBox(box, 'frameSelection', true);
@@ -2341,13 +2357,13 @@ window.toggleUvWorkbench = toggleUvWorkbench;
 window.toggleUvWorkbenchSplit = toggleUvWorkbenchSplit;
 window.toggleUvWorkbenchFullscreen = toggleUvWorkbenchFullscreen;
 
-function _scheduleViewportReload() {
-  if (window._gizmoJustDragged) return;  // skip reload after gizmo transform
+function _scheduleViewportReload(force) {
+  if (!force && window._gizmoJustDragged) return;  // skip reload right after gizmo transform
   if (_vpReloadTimer) clearTimeout(_vpReloadTimer);
   _vpReloadTimer = setTimeout(function() {
     _vpReloadTimer = null;
     if (typeof window.reloadStage === 'function') window.reloadStage(false);
-  }, 600);
+  }, force ? 30 : 600);
 }
 
 function _scheduleNodePanelRefresh() {
@@ -3498,8 +3514,35 @@ async function toggleVisibility(path, vis) { await api('/api/prims/visibility', 
 async function toggleVisibilitySelected() { if (!_selectedPaths.length) return;
   await api('/api/prims/visibility', 'POST', { paths: _selectedPaths, visible: true }); }
 async function reparentPrim(child, parent) { await api('/api/prims/parent', 'POST', { paths: [child], parent_path: parent }); setStatus('Reparented'); }
-async function cmdUndo() { await api('/api/undo', 'POST'); }
-async function cmdRedo() { await api('/api/redo', 'POST'); }
+async function cmdUndo() {
+  window._gizmoJustDragged = false;
+  var res = await api('/api/undo', 'POST');
+  if (!res || res.ok !== true) {
+    setStatus('Undo: nothing to undo', true);
+    return;
+  }
+  setStatus('Undo');
+  refreshPrims();
+  _scheduleViewportReload(true);
+  _scheduleMaterialPanelRefresh();
+  _scheduleNodePanelRefresh();
+  _scheduleUvPanelRefresh();
+}
+
+async function cmdRedo() {
+  window._gizmoJustDragged = false;
+  var res = await api('/api/redo', 'POST');
+  if (!res || res.ok !== true) {
+    setStatus('Redo: nothing to redo', true);
+    return;
+  }
+  setStatus('Redo');
+  refreshPrims();
+  _scheduleViewportReload(true);
+  _scheduleMaterialPanelRefresh();
+  _scheduleNodePanelRefresh();
+  _scheduleUvPanelRefresh();
+}
 window.cmdUndo = cmdUndo; window.cmdRedo = cmdRedo;
 
 function _isEditableHotkeyTarget(target) {
