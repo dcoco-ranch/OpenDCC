@@ -1314,7 +1314,7 @@ _gizmoProxy.name = '__OpenDCC_GizmoProxy';
 _gizmoProxy.visible = false;
 scene.add(_gizmoProxy);
 
-function attachGizmo(obj) {
+function attachGizmo(obj, highlightObj) {
   if (!obj) {
     _gizmoProxy.visible = false;
     gizmo.detach();
@@ -1322,13 +1322,17 @@ function attachGizmo(obj) {
     return;
   }
   if (obj !== _gizmoProxy) _gizmoProxy.visible = false;
+
+  // Three.js convention: attach directly to a stable Object3D anchor.
+  // Do not decompose/overwrite matrices manually here.
   obj.matrixAutoUpdate = true;
-  obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
   gizmo.attach(obj);
-  if (window._highlightObject) window._highlightObject(obj === _gizmoProxy ? null : obj);
+
+  var hi = highlightObj || (obj === _gizmoProxy ? null : obj);
+  if (window._highlightObject) window._highlightObject((hi && hi.geometry) ? hi : null);
 }
 
-function attachGizmoToPivot(pivot, primPath) {
+function attachGizmoToPivot(pivot, primPath, highlightObj) {
   if (!Array.isArray(pivot) || pivot.length < 3) return false;
 
   // Spatial data comes from USD world. Convert through usdRoot transform
@@ -1346,7 +1350,7 @@ function attachGizmoToPivot(pivot, primPath) {
   _gizmoProxy.rotation.set(0, 0, 0);
   _gizmoProxy.scale.set(1, 1, 1);
   _gizmoProxy._primPath = String(primPath || '');
-  attachGizmo(_gizmoProxy);
+  attachGizmo(_gizmoProxy, highlightObj || null);
   return true;
 }
 
@@ -1503,19 +1507,8 @@ window.frameSelection = function() {
   const box = new THREE.Box3();
   let hasMesh = false;
 
-  usdRoot.traverse(obj => {
-    if (!obj || !obj.isMesh || !obj.geometry) return;
-    for (var i = 0; i < selected.length; i++) {
-      if (_objMatchesPrimPath(obj, selected[i])) {
-        box.expandByObject(obj);
-        hasMesh = true;
-        break;
-      }
-    }
-  });
-
-  // Spatial cache fallback (USD world bbox) for Xform/Scope selections.
-  if (!hasMesh && window._spatialPrimCache) {
+  // Prefer authoritative USD spatial bbox when available.
+  if (window._spatialPrimCache) {
     for (var si = 0; si < selected.length; si++) {
       var sp = window._spatialPrimCache[selected[si]];
       if (!sp || !sp.bbox || !Array.isArray(sp.bbox.min) || !Array.isArray(sp.bbox.max)) continue;
@@ -1527,6 +1520,20 @@ window.frameSelection = function() {
         hasMesh = true;
       } catch (_) {}
     }
+  }
+
+  // Fallback to Three.js mesh matching only when spatial cache is unavailable.
+  if (!hasMesh) {
+    usdRoot.traverse(obj => {
+      if (!obj || !obj.isMesh || !obj.geometry) return;
+      for (var i = 0; i < selected.length; i++) {
+        if (_objMatchesPrimPath(obj, selected[i])) {
+          box.expandByObject(obj);
+          hasMesh = true;
+          break;
+        }
+      }
+    });
   }
 
   // Last fallback: gizmo target position
@@ -2941,69 +2948,87 @@ async function _attachGizmoForPrim(primPath, reqId) {
     return;
   }
 
-  var STRONG = 150;
+  var STRONG = 170;
   var USABLE = 120;
 
-  // Fast path first (no async round-trip), but only with strong confidence.
   var fastHit = _findBestObjectForPrimPathScored(primPath);
-  if (fastHit.obj && fastHit.score >= STRONG) {
+  var best = fastHit;
+  var attachPath = primPath;
+
+  if (!(fastHit.obj && fastHit.score >= STRONG)) {
+    attachPath = await _resolveAttachPathForPrim(primPath);
     if (reqId !== _gizmoAttachReqId) return;
-    fastHit.obj._primPath = primPath;
-    window._attachGizmo(fastHit.obj);
-    return;
+    var hAttach = _findBestObjectForPrimPathScored(attachPath);
+    var hPrim = _findBestObjectForPrimPathScored(primPath);
+    best = (hAttach.score >= hPrim.score) ? hAttach : hPrim;
   }
 
-  var attachPath = await _resolveAttachPathForPrim(primPath);
-  if (reqId !== _gizmoAttachReqId) return;
-
-  var hAttach = _findBestObjectForPrimPathScored(attachPath);
-  var hPrim = _findBestObjectForPrimPathScored(primPath);
-  var best = (hAttach.score >= hPrim.score) ? hAttach : hPrim;
-
-  // Spatial fallback from USD (pivot/bbox) for Xform/Scope or ambiguous mesh matches.
+  // USD spatial is authoritative for gizmo pivot when mesh origins are unreliable.
   var sp = window._spatialPrimCache ? window._spatialPrimCache[primPath] : null;
   if (!sp) sp = await _fetchPrimSpatial(primPath);
   if (reqId !== _gizmoAttachReqId) return;
 
   var pivot = null;
+  var center3 = null;
+  var radius = 0;
   if (sp) {
-    // For container Xforms, world pivot can be identity while geometry is offset;
-    // prefer world bbox center when available.
-    if (sp.bbox && Array.isArray(sp.bbox.center) && sp.bbox.center.length >= 3) pivot = sp.bbox.center;
-    else if (Array.isArray(sp.pivot) && sp.pivot.length >= 3) pivot = sp.pivot;
+    if (sp.bbox && Array.isArray(sp.bbox.center) && sp.bbox.center.length >= 3) {
+      pivot = sp.bbox.center;
+      center3 = _usdPointToThreeWorld(sp.bbox.center[0], sp.bbox.center[1], sp.bbox.center[2]);
+      radius = Number(sp.bbox.radius || 0);
+    } else if (Array.isArray(sp.pivot) && sp.pivot.length >= 3) {
+      pivot = sp.pivot;
+      center3 = _usdPointToThreeWorld(sp.pivot[0], sp.pivot[1], sp.pivot[2]);
+      radius = 0.2;
+    }
+  }
+
+  function _meshConsistentWithSpatial(obj) {
+    if (!obj) return false;
+    if (!center3) return true; // no spatial ref → can't invalidate
+    try {
+      var mp = new (window.THREE || THREE).Vector3();
+      obj.getWorldPosition(mp);
+      var d = mp.distanceTo(center3);
+      var tol = Math.max(0.30, radius * 0.90);
+      return d <= tol;
+    } catch (_) {
+      return false;
+    }
   }
 
   if (best.obj && best.score >= USABLE) {
-    var acceptMesh = true;
+    var useMesh = false;
 
-    // Guard against wrong-name collisions: mesh center must be near USD spatial center
-    // unless score is very strong (full-path-like match).
-    if (best.score < 170 && sp && sp.bbox && Array.isArray(sp.bbox.center)) {
-      try {
-        var meshPos = new (window.THREE || THREE).Vector3();
-        best.obj.getWorldPosition(meshPos);
-        var c = _usdPointToThreeWorld(sp.bbox.center[0], sp.bbox.center[1], sp.bbox.center[2]);
-        var d = meshPos.distanceTo(c);
-        var r = Number(sp.bbox.radius || 0);
-        var tol = Math.max(0.35, r * 1.2);
-        if (d > tol) acceptMesh = false;
-      } catch (_) {}
+    if (!center3) {
+      useMesh = true;
+    } else {
+      // Only trust mesh origin when both score and spatial consistency are good.
+      useMesh = (best.score >= STRONG) && _meshConsistentWithSpatial(best.obj);
     }
 
-    if (acceptMesh) {
+    if (useMesh) {
       best.obj._primPath = primPath;
-      window._attachGizmo(best.obj);
+      window._attachGizmo(best.obj, best.obj);
       console.log('[gizmo] attached to', primPath, 'via', attachPath, best.obj.type, best.obj.name || '(unnamed)', 'score=' + best.score);
       return;
     }
   }
 
+  // Three.js convention fallback: attach controls to a dedicated pivot anchor.
   if (pivot && typeof window._attachGizmoToPivot === 'function') {
-    var ok = window._attachGizmoToPivot(pivot, primPath);
+    var ok = window._attachGizmoToPivot(pivot, primPath, best.obj || null);
     if (ok) {
       console.log('[gizmo] attached via USD spatial pivot for', primPath, 'pivot=', pivot.map(function(v){return Number(v).toFixed(3);}));
       return;
     }
+  }
+
+  if (best.obj && best.score >= USABLE) {
+    best.obj._primPath = primPath;
+    window._attachGizmo(best.obj, best.obj);
+    console.log('[gizmo] fallback attach mesh for', primPath, 'via', attachPath, 'score=' + best.score);
+    return;
   }
 
   console.log('[gizmo] no Three.js object found for', primPath);
