@@ -1536,6 +1536,81 @@ async def prim_detail(prim_path: str, time: Optional[float] = None):
     return {**d, "query_time": time, "attributes": attrs}
 
 
+@app.get("/api/prim_spatial/{prim_path:path}")
+async def prim_spatial(prim_path: str, time: Optional[float] = None):
+    """Return lightweight spatial data for a prim (pivot + world bbox).
+
+    Used by viewport gizmo/frame fallbacks when no direct Three.js mesh mapping
+    is available for selected Xform/Scope prims.
+    """
+    full_path = "/" + prim_path.lstrip("/")
+
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "path": full_path, "error": "no stage"}
+
+    if not _pxr_available:
+        return {"ok": False, "path": full_path, "error": "spatial query requires pxr mode"}
+
+    from pxr import Sdf, Usd, UsdGeom
+
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+    tc = Usd.TimeCode.Default() if time is None else Usd.TimeCode(float(time))
+
+    pivot = None
+    try:
+        xcache = UsdGeom.XformCache(tc)
+        m = xcache.GetLocalToWorldTransform(prim)
+        t = m.ExtractTranslation()
+        pivot = [float(t[0]), float(t[1]), float(t[2])]
+    except Exception:
+        pivot = None
+
+    bbox_data = None
+    try:
+        purposes = [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+            UsdGeom.Tokens.guide,
+        ]
+        bcache = UsdGeom.BBoxCache(tc, purposes, useExtentsHint=True, ignoreVisibility=False)
+        wb = bcache.ComputeWorldBound(prim)
+        rng = wb.GetRange()
+        if rng and not rng.IsEmpty():
+            mn = rng.GetMin()
+            mx = rng.GetMax()
+            cx = (float(mn[0]) + float(mx[0])) * 0.5
+            cy = (float(mn[1]) + float(mx[1])) * 0.5
+            cz = (float(mn[2]) + float(mx[2])) * 0.5
+            sx = float(mx[0]) - float(mn[0])
+            sy = float(mx[1]) - float(mn[1])
+            sz = float(mx[2]) - float(mn[2])
+            radius = max(1e-6, (sx * sx + sy * sy + sz * sz) ** 0.5 * 0.5)
+            bbox_data = {
+                "min": [float(mn[0]), float(mn[1]), float(mn[2])],
+                "max": [float(mx[0]), float(mx[1]), float(mx[2])],
+                "center": [cx, cy, cz],
+                "size": [sx, sy, sz],
+                "radius": radius,
+            }
+            if pivot is None:
+                pivot = [cx, cy, cz]
+    except Exception:
+        bbox_data = None
+
+    return {
+        "ok": True,
+        "path": full_path,
+        "type": str(prim.GetTypeName() or ""),
+        "pivot": pivot,
+        "bbox": bbox_data,
+    }
+
+
 def _uv_pair_from_value(v: Any) -> Optional[list[float]]:
     try:
         if hasattr(v, "__len__") and len(v) >= 2:

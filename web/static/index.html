@@ -1306,20 +1306,42 @@ gizmo.addEventListener('mouseUp', () => {
   });
 });
 
+const _gizmoProxy = new THREE.Mesh(
+  new THREE.SphereGeometry(0.02, 8, 8),
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+_gizmoProxy.name = '__OpenDCC_GizmoProxy';
+_gizmoProxy.visible = false;
+scene.add(_gizmoProxy);
+
 function attachGizmo(obj) {
   if (!obj) {
+    _gizmoProxy.visible = false;
     gizmo.detach();
     if (window._highlightObject) window._highlightObject(null);
     return;
   }
+  if (obj !== _gizmoProxy) _gizmoProxy.visible = false;
   obj.matrixAutoUpdate = true;
   obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
   gizmo.attach(obj);
-  if (window._highlightObject) window._highlightObject(obj);
+  if (window._highlightObject) window._highlightObject(obj === _gizmoProxy ? null : obj);
+}
+
+function attachGizmoToPivot(pivot, primPath) {
+  if (!Array.isArray(pivot) || pivot.length < 3) return false;
+  _gizmoProxy.visible = true;
+  _gizmoProxy.position.set(Number(pivot[0]) || 0, Number(pivot[1]) || 0, Number(pivot[2]) || 0);
+  _gizmoProxy.rotation.set(0, 0, 0);
+  _gizmoProxy.scale.set(1, 1, 1);
+  _gizmoProxy._primPath = String(primPath || '');
+  attachGizmo(_gizmoProxy);
+  return true;
 }
 
 window._gizmo      = gizmo;
 window._attachGizmo = attachGizmo;
+window._attachGizmoToPivot = attachGizmoToPivot;
 window._gizmoJustDragged = false;
 
 // ── Selection highlight (wireframe box) ──────────────────────────────────
@@ -1470,10 +1492,32 @@ window.frameSelection = function() {
     }
   });
 
-  // Fallback: if selection path mapping is ambiguous, at least frame current gizmo target.
-  if (!hasMesh && window._gizmo && window._gizmo.object && window._gizmo.object.isMesh) {
-    box.expandByObject(window._gizmo.object);
-    hasMesh = true;
+  // Spatial cache fallback (USD world bbox) for Xform/Scope selections.
+  if (!hasMesh && window._spatialPrimCache) {
+    for (var si = 0; si < selected.length; si++) {
+      var sp = window._spatialPrimCache[selected[si]];
+      if (!sp || !sp.bbox || !Array.isArray(sp.bbox.min) || !Array.isArray(sp.bbox.max)) continue;
+      try {
+        box.expandByPoint(new THREE.Vector3(Number(sp.bbox.min[0]) || 0, Number(sp.bbox.min[1]) || 0, Number(sp.bbox.min[2]) || 0));
+        box.expandByPoint(new THREE.Vector3(Number(sp.bbox.max[0]) || 0, Number(sp.bbox.max[1]) || 0, Number(sp.bbox.max[2]) || 0));
+        hasMesh = true;
+      } catch (_) {}
+    }
+  }
+
+  // Last fallback: gizmo target position
+  if (!hasMesh && window._gizmo && window._gizmo.object) {
+    var go = window._gizmo.object;
+    if (go.isMesh) {
+      box.expandByObject(go);
+      hasMesh = true;
+    } else {
+      var p = new THREE.Vector3();
+      try { go.getWorldPosition(p); } catch (_) { p.set(0, 0, 0); }
+      box.expandByPoint(new THREE.Vector3(p.x - 0.1, p.y - 0.1, p.z - 0.1));
+      box.expandByPoint(new THREE.Vector3(p.x + 0.1, p.y + 0.1, p.z + 0.1));
+      hasMesh = true;
+    }
   }
 
   if (!hasMesh) return false;
@@ -1693,6 +1737,61 @@ function _writeAssetToWasmFs(assetPath, bytes) {
   }
 }
 
+async function _getDriverStageSafe() {
+  if (!_driver || typeof _driver.GetStage !== 'function') return null;
+  try {
+    let st = _driver.GetStage();
+    if (st instanceof Promise) st = await st;
+    return st || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function _callIfMethod(obj, name) {
+  if (!obj || typeof obj[name] !== 'function') return false;
+  try {
+    var out = obj[name]();
+    if (out instanceof Promise) await out;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function _tryHotReloadDriver(reason) {
+  if (!_driver) return false;
+
+  try {
+    const stage = await _getDriverStageSafe();
+
+    // Try known stage/driver reload hooks (bindings vary by build).
+    let reloaded = false;
+    if (stage) {
+      reloaded = await _callIfMethod(stage, 'Reload');
+      if (!reloaded) reloaded = await _callIfMethod(stage, 'ReloadAllLayers');
+    }
+    if (!reloaded) {
+      reloaded = await _callIfMethod(_driver, 'Reload');
+      if (!reloaded) reloaded = await _callIfMethod(_driver, 'Reopen');
+    }
+    if (!reloaded) return false;
+
+    try {
+      _driver.SetTime(_currentTimeCode);
+      _driver.Draw();
+    } catch (_) {
+      return false;
+    }
+
+    console.log('[loadStage] hot reload OK (' + String(reason || 'incremental') + ')');
+    return true;
+  } catch (e) {
+    console.warn('[loadStage] hot reload failed:', e && e.message ? e.message : e);
+    return false;
+  }
+}
+
 function _normalizeUpAxisToken(raw) {
   if (raw === null || raw === undefined) return 'y';
   if (typeof raw === 'number' && Number.isFinite(raw)) {
@@ -1794,24 +1893,6 @@ async function loadStage(reframe = true) {
   // Don't show overlay for incremental reloads (scene_changed)
   if (reframe) setVpMsg("Fetching stage…");
 
-  // Tear down previous driver
-  if (_driver) {
-    try { _driver.delete(); } catch (_) {}
-    _driver = null;
-  }
-  // For incremental reloads, keep the old scene visible until the new one is ready
-  // Only clear for full reloads (reframe=true) to avoid flash
-  if (reframe) {
-    if (window._gizmo) window._gizmo.detach();
-    if (window._highlightObject) window._highlightObject(null);
-    usdRoot.clear();
-  }
-
-  // Remove previous virtual file — try multiple cleanup approaches
-  // for robustness (Emscripten FS can be finicky with open file handles)
-  try { USD.FS_unlink(STAGE_VPATH); } catch (_) {}
-  try { USD.FS_unlink('/scene.usda'); } catch (_) {}
-
   // ── Step 1: check if stage has physical files (composition) ────────────
   let stageInfo;
   try {
@@ -1822,6 +1903,8 @@ async function loadStage(reframe = true) {
   }
 
   let usda;
+  let preferHotReload = false;
+
   if (stageInfo.rootLayer && stageInfo.assets.length > 0) {
     // ── Composition mode: pre-load assets into WASM FS ─────────────────
     const assets = Array.isArray(stageInfo.assets) ? stageInfo.assets : [];
@@ -1832,6 +1915,9 @@ async function loadStage(reframe = true) {
       && _fsComposeCache.rootLayer === stageInfo.rootLayer
       && _fsComposeCache.assetKey === assetKey
     );
+
+    // Candidate for true incremental refresh without recreating HdWebSyncDriver.
+    preferHotReload = !!canReuseCachedAssets;
 
     console.log(`[loadStage] composition mode: ${stageInfo.count} assets${canReuseCachedAssets ? ' (cached reuse)' : ''}`);
 
@@ -1933,12 +2019,42 @@ async function loadStage(reframe = true) {
     }
   }
 
-  // ── Step 3: open with HdWebSyncDriver ────────────────────────────────
+  // Fast incremental path: hot-reload currently opened stage in-place.
+  // If unsupported by current wasm bindings, we fall back to full driver rebuild.
+  if (preferHotReload) {
+    var hotOk = await _tryHotReloadDriver('compose-cache');
+    if (hotOk) {
+      _usdReady = true;
+      hideVpMsg();
+
+      // Keep camera exactly as-is on incremental updates
+      camera.position.copy(savedCamPos);
+      controls.target.copy(savedCamTarget);
+      camera.fov  = savedCamFov;
+      camera.near = savedCamNear;
+      camera.far  = savedCamFar;
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      if (window.setStatus) window.setStatus('Stage reloaded (hot)');
+      _loading = false;
+      if (typeof refreshPrims === 'function') refreshPrims();
+      return;
+    }
+  }
+
+  // ── Step 3: open with HdWebSyncDriver (fallback/full rebuild) ─────────
+  // Tear down previous driver only now (keeps old view visible while loading).
+  if (_driver) {
+    try { _driver.delete(); } catch (_) {}
+    _driver = null;
+  }
+
   // Clear old scene graph right before rebuilding (minimizes blank frame)
-  // Detach gizmo first — attached mesh is about to be destroyed
   if (window._gizmo) window._gizmo.detach();
   if (window._highlightObject) window._highlightObject(null);
   usdRoot.clear();
+
   const delegateConfig = { usdRoot, paths: [], driver: () => _driver };
   try {
     const renderInterface = new ThreeRenderDelegateInterface(delegateConfig);
@@ -2673,6 +2789,19 @@ function highlightSelectedRows() {
   });
 }
 
+window._spatialPrimCache = window._spatialPrimCache || Object.create(null);
+
+async function _fetchPrimSpatial(path) {
+  var key = String(path || '').replace(/^\//, '');
+  if (!key) return null;
+  var d = await api('/api/prim_spatial/' + key);
+  if (d && d.ok) {
+    window._spatialPrimCache[path] = d;
+    return d;
+  }
+  return null;
+}
+
 // Find Three.js object matching a USD prim path, then attach gizmo
 function _gizmoMatchScore(obj, primPath) {
   if (!obj || !primPath) return -1;
@@ -2698,9 +2827,9 @@ function _gizmoMatchScore(obj, primPath) {
   return -1;
 }
 
-function _findBestObjectForPrimPath(primPath) {
+function _findBestObjectForPrimPathScored(primPath) {
   var usdRoot = window._usdRoot;
-  if (!usdRoot) return null;
+  if (!usdRoot) return { obj: null, score: -1 };
 
   var best = null;
   var bestScore = -1;
@@ -2712,20 +2841,25 @@ function _findBestObjectForPrimPath(primPath) {
       best = obj;
     }
   });
-  return best;
+  return { obj: best, score: bestScore };
+}
+
+function _findBestObjectForPrimPath(primPath) {
+  return _findBestObjectForPrimPathScored(primPath).obj;
 }
 
 async function _resolveAttachPathForPrim(primPath) {
   var p = String(primPath || '');
   if (!p) return p;
 
-  // Direct path first
-  if (_findBestObjectForPrimPath(p)) return p;
+  // Direct path first (only when confidence is high enough)
+  var direct = _findBestObjectForPrimPathScored(p);
+  if (direct.obj && direct.score >= 150) return p;
 
   // Try descendants (for Xform/Scope selections)
   var queue = [p];
   var seen = new Set(queue);
-  var maxDepth = 5;
+  var maxDepth = 10;
   var level = 0;
   while (queue.length && level < maxDepth) {
     var next = [];
@@ -2739,7 +2873,8 @@ async function _resolveAttachPathForPrim(primPath) {
         if (!cp || seen.has(cp)) continue;
         seen.add(cp);
 
-        if (_findBestObjectForPrimPath(cp)) return cp;
+        var ch = _findBestObjectForPrimPathScored(cp);
+        if (ch.obj && ch.score >= 120) return cp;
         next.push(cp);
       }
     }
@@ -2752,7 +2887,8 @@ async function _resolveAttachPathForPrim(primPath) {
   while (parts.length > 1) {
     parts.pop();
     var pp = '/' + parts.join('/');
-    if (_findBestObjectForPrimPath(pp)) return pp;
+    var ph = _findBestObjectForPrimPathScored(pp);
+    if (ph.obj && ph.score >= 120) return pp;
   }
 
   return p;
@@ -2769,28 +2905,52 @@ async function _attachGizmoForPrim(primPath, reqId) {
     return;
   }
 
-  // Fast path first (no async round-trip)
-  var fast = _findBestObjectForPrimPath(primPath);
-  if (fast) {
+  var STRONG = 150;
+  var USABLE = 120;
+
+  // Fast path first (no async round-trip), but only with strong confidence.
+  var fastHit = _findBestObjectForPrimPathScored(primPath);
+  if (fastHit.obj && fastHit.score >= STRONG) {
     if (reqId !== _gizmoAttachReqId) return;
-    fast._primPath = primPath;
-    window._attachGizmo(fast);
+    fastHit.obj._primPath = primPath;
+    window._attachGizmo(fastHit.obj);
     return;
   }
 
   var attachPath = await _resolveAttachPathForPrim(primPath);
   if (reqId !== _gizmoAttachReqId) return;
 
-  var found = _findBestObjectForPrimPath(attachPath) || _findBestObjectForPrimPath(primPath);
+  var hAttach = _findBestObjectForPrimPathScored(attachPath);
+  var hPrim = _findBestObjectForPrimPathScored(primPath);
+  var best = (hAttach.score >= hPrim.score) ? hAttach : hPrim;
 
-  if (found) {
-    found._primPath = primPath;
-    window._attachGizmo(found);
-    console.log('[gizmo] attached to', primPath, 'via', attachPath, found.type, found.name || '(unnamed)');
-  } else {
-    console.log('[gizmo] no Three.js object found for', primPath);
-    window._attachGizmo(null);
+  if (best.obj && best.score >= USABLE) {
+    best.obj._primPath = primPath;
+    window._attachGizmo(best.obj);
+    console.log('[gizmo] attached to', primPath, 'via', attachPath, best.obj.type, best.obj.name || '(unnamed)', 'score=' + best.score);
+    return;
   }
+
+  // Spatial fallback from USD (pivot/bbox) for Xform/Scope or ambiguous mesh matches.
+  var sp = await _fetchPrimSpatial(primPath);
+  if (reqId !== _gizmoAttachReqId) return;
+
+  var pivot = null;
+  if (sp) {
+    if (Array.isArray(sp.pivot) && sp.pivot.length >= 3) pivot = sp.pivot;
+    else if (sp.bbox && Array.isArray(sp.bbox.center) && sp.bbox.center.length >= 3) pivot = sp.bbox.center;
+  }
+
+  if (pivot && typeof window._attachGizmoToPivot === 'function') {
+    var ok = window._attachGizmoToPivot(pivot, primPath);
+    if (ok) {
+      console.log('[gizmo] attached via USD spatial pivot for', primPath, 'pivot=', pivot.map(function(v){return Number(v).toFixed(3);}));
+      return;
+    }
+  }
+
+  console.log('[gizmo] no Three.js object found for', primPath);
+  window._attachGizmo(null);
 }
 
 window._requestAttachGizmoForPrim = function(primPath) {
@@ -2872,6 +3032,7 @@ function connectWS() {
     if (msg.event === 'stage_opened') {
       document.getElementById('stage-label').textContent = msg.path || '[stage]';
       setStatus('Opened: ' + msg.path);
+      window._spatialPrimCache = Object.create(null);
       // New stage opened — reload and reframe
       if (typeof window.reloadStage === 'function') window.reloadStage(true);
       refreshPrims();
@@ -2879,6 +3040,7 @@ function connectWS() {
     }
     if (msg.event === 'stage_new') {
       document.getElementById('stage-label').textContent = '[new]';
+      window._spatialPrimCache = Object.create(null);
       if (typeof window.reloadStage === 'function') window.reloadStage(true);
       _scheduleUvPanelRefresh();
     }
@@ -3693,6 +3855,9 @@ async function selectPrimByPath(path, opts) {
 
   var key = path.replace(/^\//, '');
   if (!key) return;
+
+  // Warm spatial cache for robust gizmo/frame fallbacks on container prims.
+  _fetchPrimSpatial(path).catch(function() {});
 
   var tc = Number(opts.timeCode);
   if (!Number.isFinite(tc)) tc = Number(window._currentTimeCode);
