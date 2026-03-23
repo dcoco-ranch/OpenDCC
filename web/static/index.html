@@ -1325,7 +1325,9 @@ function _objMatchesPrimPath(obj, primPath) {
 }
 
 window.frameSelection = function() {
-  var selected = Array.isArray(window._selectedPaths) ? window._selectedPaths : [];
+  var selected = [];
+  if (typeof window.getSelectedPaths === 'function') selected = window.getSelectedPaths();
+  else if (Array.isArray(window._selectedPaths)) selected = window._selectedPaths.slice();
   if (!selected.length) return false;
 
   const box = new THREE.Box3();
@@ -2274,11 +2276,29 @@ async function _resolveAttachPathForPrim(primPath) {
   return p;
 }
 
-async function _attachGizmoForPrim(primPath) {
+let _gizmoAttachReqId = 0;
+
+async function _attachGizmoForPrim(primPath, reqId) {
   if (!window._attachGizmo || !window._usdRoot) return;
-  if (!primPath) { window._attachGizmo(null); return; }
+  if (reqId !== _gizmoAttachReqId) return;
+
+  if (!primPath) {
+    if (reqId === _gizmoAttachReqId) window._attachGizmo(null);
+    return;
+  }
+
+  // Fast path first (no async round-trip)
+  var fast = _findBestObjectForPrimPath(primPath);
+  if (fast) {
+    if (reqId !== _gizmoAttachReqId) return;
+    fast._primPath = primPath;
+    window._attachGizmo(fast);
+    return;
+  }
 
   var attachPath = await _resolveAttachPathForPrim(primPath);
+  if (reqId !== _gizmoAttachReqId) return;
+
   var found = _findBestObjectForPrimPath(attachPath) || _findBestObjectForPrimPath(primPath);
 
   if (found) {
@@ -2290,6 +2310,11 @@ async function _attachGizmoForPrim(primPath) {
     window._attachGizmo(null);
   }
 }
+
+window._requestAttachGizmoForPrim = function(primPath) {
+  _gizmoAttachReqId += 1;
+  return _attachGizmoForPrim(primPath, _gizmoAttachReqId);
+};
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 let ws = null;
@@ -2440,6 +2465,7 @@ window.saveEditsLayerAs = saveEditsLayerAs;
 
 // ── Selection state ───────────────────────────────────────────────────────
 var _selectedPaths = [];
+window.getSelectedPaths = function() { return _selectedPaths.slice(); };
 
 // ── Outliner ──────────────────────────────────────────────────────────────
 async function refreshPrims() {
@@ -2922,7 +2948,9 @@ async function selectPrimByPath(path, opts) {
   }
 
   // Try to attach gizmo to the corresponding Three.js object
-  if (!opts.skipGizmo) await _attachGizmoForPrim(path);
+  if (!opts.skipGizmo && typeof window._requestAttachGizmoForPrim === 'function') {
+    await window._requestAttachGizmoForPrim(path);
+  }
 
   var key = path.replace(/^\//, '');
   if (!key) return;

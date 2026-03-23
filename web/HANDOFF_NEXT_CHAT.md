@@ -36,6 +36,7 @@ Branch: `develop`
     - cleanup pass: removed redundant client-side heuristic hooks; kept deterministic path (`/api/material_proxy` + per-mesh material proxy application)
     - UX fixes: frame now targets selection first (`F`, `Shift+F` = frame all), undo/redo hotkeys hardened (capture phase + `Ctrl/Cmd+Y` redo), up-axis mode toggle added (`Y↑ Auto/Force/Native`)
     - gizmo attach improved for deep hierarchies: descendant/parent path resolution + best-match scoring against Hydra mesh names
+    - follow-up UX fix: frame selection preserves current view direction, gizmo attach made race-safe with request IDs and selection getter bridge for module/plain-script split
   - backend node-graph authoring endpoints added (USD edit layer, non-destructive):
     - `GET /api/node_graph/library`
     - `POST /api/node_graph/create_node`
