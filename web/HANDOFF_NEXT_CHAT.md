@@ -49,6 +49,8 @@ Branch: `develop`
   - backend: `GET /api/prim_uv/{primPath}` (mesh resolution from Xform/Scope, primvar selection/fallback, face-loop UV payload)
   - frontend: dedicated `UV Editor` workbench (`Split/Detached/Fullscreen`) with Canvas2D wireframe preview
   - interactions: fit, pan, zoom, flip-V, primvar field (`st` by default)
+  - follow-up fix: viewport picking bound explicitly to Three.js canvas (`#viewport-wrap > canvas`) to avoid UV-canvas conflict
+  - follow-up UX: one-shot fit+focus on UV/Node workbench open (not on every refresh/selection)
 - External reference inspected: `cubiq/Mellon`
   - React Flow UX cues used as target for next polish pass (readability/controls/minimap style).
 
