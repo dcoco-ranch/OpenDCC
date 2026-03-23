@@ -104,7 +104,7 @@
 - [x] Preview matériau temps réel dans le viewport
 
 ### 4.2 — UV Editor web (remplace `opendcc.usd_editor.uv_editor`)
-- [ ] Canvas 2D (Three.js ou Canvas API) affichant les UVs
+- [x] Canvas 2D (Canvas API) affichant les UVs via endpoint serveur `/api/prim_uv/{path}`
 - [ ] Sélection de faces/vertices UV
 - [ ] Transformations UV basiques (translate, rotate, scale)
 

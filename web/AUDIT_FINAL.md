@@ -54,6 +54,12 @@ Branch: `develop`
 - [ ] Textures connect/disconnect OK
 - [ ] MatX/vendor détectés en read-only sans régression
 
+### UV Editor (MVP)
+- [ ] Workbench UV s’ouvre en `Split`, `Detached`, `Fullscreen`
+- [ ] Sélection mesh/Xform affiche des UVs (fallback descendant mesh)
+- [ ] Fit + pan/zoom + flip V fonctionnels
+- [ ] Endpoint `/api/prim_uv/{path}` renvoie des boucles UV cohérentes
+
 ---
 
 ## 2) USD correctness (non-destructif)

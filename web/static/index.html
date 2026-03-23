@@ -511,6 +511,88 @@
       pointer-events: none;
     }
 
+    /* UV workbench (Phase 4.2 MVP) */
+    #uv-workbench {
+      position: absolute;
+      top: 24px;
+      right: 10%;
+      bottom: 24px;
+      left: 10%;
+      min-width: 420px;
+      background: rgba(26, 26, 26, .96);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      z-index: 19;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 22px rgba(0,0,0,.35);
+      contain: content;
+      backdrop-filter: blur(2px);
+    }
+    #uv-workbench.split {
+      top: 6px;
+      right: 6px;
+      bottom: 6px;
+      left: auto;
+      width: min(42%, 760px);
+      min-width: 360px;
+    }
+    #uv-workbench.fullscreen {
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      width: auto;
+      min-width: 0;
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+      border-top: none;
+      background: rgba(20, 20, 20, .985);
+    }
+    #uv-workbench-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
+      min-height: 0;
+    }
+    #uv-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #222;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    #uv-toolbar input[type="text"] {
+      width: 72px;
+      margin-bottom: 0;
+      height: 23px;
+      padding: 2px 6px;
+      background: var(--bg3);
+    }
+    #uv-canvas-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 260px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #0f1114;
+      cursor: grab;
+    }
+    #uv-canvas-wrap:active { cursor: grabbing; }
+    #uv-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
     /* Open modal */
     #open-modal {
       display: none; position: fixed; inset: 0;
@@ -584,6 +666,7 @@
     <button onclick="downloadGLB()" title="Download GLB">⬇ GLB</button>
     <button id="btn-material-panel" onclick="setInspectorTab('material')" title="Open Material Editor">Material Editor</button>
     <button id="btn-node-panel" onclick="toggleNodeWorkbench()" title="Open Node Editor">Node Editor</button>
+    <button id="btn-uv-panel" onclick="toggleUvWorkbench()" title="Open UV Editor">UV Editor</button>
     <button id="btn-curve-panel" onclick="toggleCurvePanel()" title="Toggle Curve Editor panel">Curve Editor</button>
     <button onclick="toggleScript()">Script Editor</button>
   </div>
@@ -693,6 +776,35 @@
         </div>
       </div>
       <div id="node-workbench-content"></div>
+    </div>
+
+    <!-- UV editor workbench (Phase 4.2 MVP) -->
+    <div id="uv-workbench" class="split" style="display:none">
+      <div class="panel-header" style="padding:6px 10px">
+        <span>UV Editor <span class="mat-tag">MVP</span></span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span id="uv-workbench-status" style="color:var(--text2);font-size:10px;min-width:130px;text-align:right"></span>
+          <button id="btn-uv-split" style="padding:1px 6px;font-size:10px" onclick="toggleUvWorkbenchSplit()" title="Split with viewport">Split</button>
+          <button id="btn-uv-fullscreen" style="padding:1px 6px;font-size:10px" onclick="toggleUvWorkbenchFullscreen()" title="Fullscreen UV editor">⛶</button>
+          <button style="padding:1px 6px;font-size:10px" onclick="refreshUvPanel()" title="Refresh UV data">↻</button>
+          <button style="padding:1px 6px;font-size:10px" onclick="toggleUvWorkbench(false)" title="Close UV editor">✕</button>
+        </div>
+      </div>
+      <div id="uv-workbench-content">
+        <div id="uv-toolbar">
+          <label style="font-size:10px;color:var(--text2)">Primvar</label>
+          <input id="uv-primvar" type="text" value="st" maxlength="64" />
+          <button onclick="refreshUvPanel()" title="Load selected prim UVs">Load</button>
+          <button onclick="fitUvView()" title="Fit all UVs in view">Fit</button>
+          <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text2)">
+            <input id="uv-flip-v" type="checkbox" checked onchange="renderUvPanel()" /> Flip V
+          </label>
+          <span id="uv-stats" style="margin-left:auto;color:var(--text2);font-size:10px"></span>
+        </div>
+        <div id="uv-canvas-wrap">
+          <canvas id="uv-canvas"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1980,6 +2092,7 @@ async function api(url, method = 'GET', body = null) {
 let _vpReloadTimer = null;
 let _matPanelRefreshTimer = null;
 let _nodePanelRefreshTimer = null;
+let _uvPanelRefreshTimer = null;
 let _suppressMatWsUntil = 0;
 
 const _nodeWorkbenchState = {
@@ -2049,6 +2162,154 @@ function toggleNodeWorkbenchFullscreen(forceState) {
 window.toggleNodeWorkbench = toggleNodeWorkbench;
 window.toggleNodeWorkbenchSplit = toggleNodeWorkbenchSplit;
 window.toggleNodeWorkbenchFullscreen = toggleNodeWorkbenchFullscreen;
+
+const _uvWorkbenchState = {
+  open: false,
+  split: true,
+  fullscreen: false,
+  primPath: '',
+  meshPath: '',
+  primvar: 'st',
+  data: null,
+  view: { scale: 1, tx: 0, ty: 0 },
+};
+
+let _uvInputBound = false;
+
+function _setUvWorkbenchStatus(text) {
+  var el = document.getElementById('uv-workbench-status');
+  if (el) el.textContent = String(text || '');
+}
+
+function _syncUvWorkbenchUi() {
+  var panel = document.getElementById('uv-workbench');
+  var btn = document.getElementById('btn-uv-panel');
+  var splitBtn = document.getElementById('btn-uv-split');
+  var fsBtn = document.getElementById('btn-uv-fullscreen');
+
+  if (panel) {
+    panel.style.display = _uvWorkbenchState.open ? 'flex' : 'none';
+    panel.classList.toggle('split', !!_uvWorkbenchState.split);
+    panel.classList.toggle('fullscreen', !!_uvWorkbenchState.fullscreen);
+  }
+  if (btn) btn.classList.toggle('primary', !!_uvWorkbenchState.open);
+  if (splitBtn) {
+    splitBtn.classList.toggle('primary', !!_uvWorkbenchState.split);
+    splitBtn.textContent = _uvWorkbenchState.split ? 'Split' : 'Detached';
+  }
+  if (fsBtn) {
+    fsBtn.classList.toggle('primary', !!_uvWorkbenchState.fullscreen);
+    fsBtn.textContent = _uvWorkbenchState.fullscreen ? '🗗' : '⛶';
+  }
+}
+
+function _bindUvCanvasInput() {
+  if (_uvInputBound) return;
+  var canvas = document.getElementById('uv-canvas');
+  var wrap = document.getElementById('uv-canvas-wrap');
+  if (!canvas || !wrap) return;
+  _uvInputBound = true;
+
+  var drag = null;
+
+  var primvarInput = document.getElementById('uv-primvar');
+  if (primvarInput) {
+    primvarInput.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Enter') refreshUvPanel();
+    });
+  }
+
+  canvas.addEventListener('pointerdown', function(ev) {
+    if (ev.button !== 0 && ev.button !== 1) return;
+    drag = {
+      x: ev.clientX,
+      y: ev.clientY,
+      tx: _uvWorkbenchState.view.tx,
+      ty: _uvWorkbenchState.view.ty,
+    };
+    try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+  });
+
+  canvas.addEventListener('pointermove', function(ev) {
+    if (!drag) return;
+    var dx = ev.clientX - drag.x;
+    var dy = ev.clientY - drag.y;
+    _uvWorkbenchState.view.tx = drag.tx + dx;
+    _uvWorkbenchState.view.ty = drag.ty + dy;
+    renderUvPanel();
+  });
+
+  function stopDrag(ev) {
+    if (!drag) return;
+    drag = null;
+    try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
+  }
+  canvas.addEventListener('pointerup', stopDrag);
+  canvas.addEventListener('pointercancel', stopDrag);
+
+  canvas.addEventListener('wheel', function(ev) {
+    ev.preventDefault();
+    var factor = (ev.deltaY < 0) ? 1.1 : 0.9;
+    var prevScale = Math.max(1e-4, Number(_uvWorkbenchState.view.scale) || 1);
+    var nextScale = Math.max(0.05, Math.min(prevScale * factor, 8192));
+
+    var rect = canvas.getBoundingClientRect();
+    var cx = ev.clientX - rect.left;
+    var cy = ev.clientY - rect.top;
+
+    // Zoom around cursor
+    _uvWorkbenchState.view.tx = cx - (cx - _uvWorkbenchState.view.tx) * (nextScale / prevScale);
+    _uvWorkbenchState.view.ty = cy - (cy - _uvWorkbenchState.view.ty) * (nextScale / prevScale);
+    _uvWorkbenchState.view.scale = nextScale;
+    renderUvPanel();
+  }, { passive: false });
+
+  canvas.addEventListener('dblclick', function() { fitUvView(); });
+}
+
+function toggleUvWorkbench(forceState) {
+  var open = (typeof forceState === 'boolean') ? forceState : !_uvWorkbenchState.open;
+  _uvWorkbenchState.open = open;
+  _syncUvWorkbenchUi();
+
+  if (!open) {
+    _setUvWorkbenchStatus('');
+    return;
+  }
+
+  _bindUvCanvasInput();
+  if (_selectedPaths.length) {
+    var path = _selectedPaths[_selectedPaths.length - 1];
+    if (path) loadUvPanel(path, { fit: true });
+  } else {
+    loadUvPanel('', { fit: true });
+  }
+}
+
+function toggleUvWorkbenchSplit(forceState) {
+  _uvWorkbenchState.split = (typeof forceState === 'boolean') ? forceState : !_uvWorkbenchState.split;
+  _syncUvWorkbenchUi();
+  renderUvPanel();
+}
+
+function toggleUvWorkbenchFullscreen(forceState) {
+  _uvWorkbenchState.fullscreen = (typeof forceState === 'boolean') ? forceState : !_uvWorkbenchState.fullscreen;
+  _syncUvWorkbenchUi();
+  renderUvPanel();
+}
+
+function _scheduleUvPanelRefresh() {
+  if (!_uvWorkbenchState.open) return;
+  if (_uvPanelRefreshTimer) clearTimeout(_uvPanelRefreshTimer);
+  _uvPanelRefreshTimer = setTimeout(function() {
+    _uvPanelRefreshTimer = null;
+    if (_uvWorkbenchState.open && typeof refreshUvPanel === 'function') refreshUvPanel();
+  }, 220);
+}
+
+window.toggleUvWorkbench = toggleUvWorkbench;
+window.toggleUvWorkbenchSplit = toggleUvWorkbenchSplit;
+window.toggleUvWorkbenchFullscreen = toggleUvWorkbenchFullscreen;
 
 function _scheduleViewportReload() {
   if (window._gizmoJustDragged) return;  // skip reload after gizmo transform
@@ -2367,6 +2628,7 @@ function connectWS() {
       refreshPrims();
       // Debounce viewport reload (slow — full WASM driver rebuild)
       _scheduleViewportReload();
+      _scheduleUvPanelRefresh();
     }
     if (msg.event === 'material_changed') {
       // Avoid full stage reload on material tweaks (low-latency interaction).
@@ -2385,10 +2647,12 @@ function connectWS() {
       // New stage opened — reload and reframe
       if (typeof window.reloadStage === 'function') window.reloadStage(true);
       refreshPrims();
+      _scheduleUvPanelRefresh();
     }
     if (msg.event === 'stage_new') {
       document.getElementById('stage-label').textContent = '[new]';
       if (typeof window.reloadStage === 'function') window.reloadStage(true);
+      _scheduleUvPanelRefresh();
     }
     if (msg.event === 'script_executed') {
       setStatus(msg.ok ? 'Script OK.' : 'Script error – see output.');
@@ -2752,6 +3016,7 @@ function initPanelSplitters() {
   window.addEventListener('resize', function() {
     _clampPanelWidths();
     _persistLayoutSizes();
+    if (_uvWorkbenchState.open) renderUvPanel();
   });
 }
 
@@ -2824,12 +3089,223 @@ function refreshNodePanel() {
   loadNodePanel(path || '', { forceRender: false });
 }
 
+function refreshUvPanel() {
+  if (!_uvWorkbenchState.open) return;
+  if (!_selectedPaths.length) {
+    loadUvPanel('', { fit: false });
+    return;
+  }
+  var path = _selectedPaths[_selectedPaths.length - 1];
+  loadUvPanel(path || '', { fit: false });
+}
+
 window.toggleCurvePanel = toggleCurvePanel;
 window.refreshCurvePanel = refreshCurvePanel;
 window.refreshPropertiesPanel = refreshPropertiesPanel;
 window.refreshMaterialPanel = refreshMaterialPanel;
 window.refreshNodePanel = refreshNodePanel;
+window.refreshUvPanel = refreshUvPanel;
 window.setInspectorTab = setInspectorTab;
+
+// ── UV Editor (Phase 4.2 MVP) ───────────────────────────────────────────
+function _uvGetPrimvarName() {
+  var inp = document.getElementById('uv-primvar');
+  var name = inp ? String(inp.value || '').trim() : '';
+  if (!name) name = 'st';
+  if (inp && inp.value !== name) inp.value = name;
+  return name;
+}
+
+function _uvEnsureCanvasSize() {
+  var canvas = document.getElementById('uv-canvas');
+  var wrap = document.getElementById('uv-canvas-wrap');
+  if (!canvas || !wrap) return null;
+
+  var rect = wrap.getBoundingClientRect();
+  var w = Math.max(1, Math.floor(rect.width));
+  var h = Math.max(1, Math.floor(rect.height));
+  var dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+  var rw = Math.floor(w * dpr);
+  var rh = Math.floor(h * dpr);
+  if (canvas.width !== rw || canvas.height !== rh) {
+    canvas.width = rw;
+    canvas.height = rh;
+  }
+
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { canvas: canvas, ctx: ctx, width: w, height: h };
+}
+
+function fitUvView() {
+  var data = _uvWorkbenchState.data || {};
+  var b = data.bounds || {};
+  var minU = Number(b.minU), maxU = Number(b.maxU), minV = Number(b.minV), maxV = Number(b.maxV);
+  if (!Number.isFinite(minU) || !Number.isFinite(maxU) || minU === maxU) { minU = 0; maxU = 1; }
+  if (!Number.isFinite(minV) || !Number.isFinite(maxV) || minV === maxV) { minV = 0; maxV = 1; }
+
+  var flip = true;
+  var flipEl = document.getElementById('uv-flip-v');
+  if (flipEl) flip = !!flipEl.checked;
+
+  var v0 = flip ? (1 - maxV) : minV;
+  var v1 = flip ? (1 - minV) : maxV;
+
+  var s = _uvEnsureCanvasSize();
+  if (!s) return;
+
+  var pad = 20;
+  var spanU = Math.max(1e-6, maxU - minU);
+  var spanV = Math.max(1e-6, v1 - v0);
+  var scale = Math.min((s.width - pad * 2) / spanU, (s.height - pad * 2) / spanV);
+  if (!Number.isFinite(scale) || scale <= 0) scale = 180;
+
+  _uvWorkbenchState.view.scale = scale;
+  _uvWorkbenchState.view.tx = (s.width - spanU * scale) * 0.5 - minU * scale;
+  _uvWorkbenchState.view.ty = (s.height - spanV * scale) * 0.5 - v0 * scale;
+
+  renderUvPanel();
+}
+window.fitUvView = fitUvView;
+
+function renderUvPanel() {
+  if (!_uvWorkbenchState.open) return;
+
+  var s = _uvEnsureCanvasSize();
+  if (!s) return;
+  var ctx = s.ctx;
+  var width = s.width;
+  var height = s.height;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#111317';
+  ctx.fillRect(0, 0, width, height);
+
+  var view = _uvWorkbenchState.view || { scale: 1, tx: 0, ty: 0 };
+  var scale = Math.max(1e-4, Number(view.scale) || 1);
+  var tx = Number(view.tx) || 0;
+  var ty = Number(view.ty) || 0;
+
+  var flip = true;
+  var flipEl = document.getElementById('uv-flip-v');
+  if (flipEl) flip = !!flipEl.checked;
+
+  function uvToScreen(u, v) {
+    var vv = flip ? (1 - v) : v;
+    return [tx + u * scale, ty + vv * scale];
+  }
+
+  // 0..1 tile backdrop
+  var p00 = uvToScreen(0, 0);
+  var p10 = uvToScreen(1, 0);
+  var p01 = uvToScreen(0, 1);
+  var tileX = Math.min(p00[0], p10[0]);
+  var tileY = Math.min(p00[1], p01[1]);
+  var tileW = Math.abs(p10[0] - p00[0]);
+  var tileH = Math.abs(p01[1] - p00[1]);
+
+  ctx.fillStyle = 'rgba(42,48,56,.55)';
+  ctx.fillRect(tileX, tileY, tileW, tileH);
+  ctx.strokeStyle = 'rgba(120,140,170,.55)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(tileX, tileY, tileW, tileH);
+
+  // Tile guides
+  ctx.strokeStyle = 'rgba(90,110,140,.22)';
+  ctx.beginPath();
+  for (var gi = 1; gi < 4; gi++) {
+    var gu = gi / 4;
+    var a = uvToScreen(gu, 0);
+    var b = uvToScreen(gu, 1);
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+
+    var gv = gi / 4;
+    var c = uvToScreen(0, gv);
+    var d = uvToScreen(1, gv);
+    ctx.moveTo(c[0], c[1]);
+    ctx.lineTo(d[0], d[1]);
+  }
+  ctx.stroke();
+
+  var data = _uvWorkbenchState.data || {};
+  var faces = Array.isArray(data.faces) ? data.faces : [];
+
+  ctx.strokeStyle = '#8ec3ff';
+  ctx.lineWidth = (scale < 40) ? 0.8 : 1.0;
+  ctx.beginPath();
+  for (var fi = 0; fi < faces.length; fi++) {
+    var f = faces[fi];
+    if (!Array.isArray(f) || f.length < 6) continue;
+
+    var p = uvToScreen(Number(f[0]) || 0, Number(f[1]) || 0);
+    ctx.moveTo(p[0], p[1]);
+    for (var i = 2; i + 1 < f.length; i += 2) {
+      p = uvToScreen(Number(f[i]) || 0, Number(f[i + 1]) || 0);
+      ctx.lineTo(p[0], p[1]);
+    }
+    ctx.closePath();
+  }
+  ctx.stroke();
+
+  var st = document.getElementById('uv-stats');
+  if (st) {
+    var faceTotal = Number(data.faceCount || 0);
+    var shown = faces.length;
+    var primvar = data.primvar || _uvWorkbenchState.primvar || 'st';
+    st.textContent = shown + '/' + faceTotal + ' faces · primvar: ' + primvar;
+  }
+}
+window.renderUvPanel = renderUvPanel;
+
+async function loadUvPanel(primPath, opts) {
+  opts = opts || {};
+
+  if (!_uvWorkbenchState.open) return;
+
+  var key = String(primPath || '').replace(/^\//, '');
+  if (!key) {
+    _uvWorkbenchState.primPath = '';
+    _uvWorkbenchState.meshPath = '';
+    _uvWorkbenchState.data = null;
+    _setUvWorkbenchStatus('Select a mesh prim');
+    renderUvPanel();
+    return;
+  }
+
+  var primvar = _uvGetPrimvarName();
+  _uvWorkbenchState.primPath = primPath;
+  _uvWorkbenchState.primvar = primvar;
+  _setUvWorkbenchStatus('Loading…');
+
+  var url = '/api/prim_uv/' + key
+    + '?primvar=' + encodeURIComponent(primvar)
+    + '&max_faces=8000';
+
+  var d = await api(url);
+  if (!d || d.ok === false) {
+    _uvWorkbenchState.data = { faceCount: 0, faces: [], primvar: primvar };
+    _setUvWorkbenchStatus((d && d.error) ? d.error : 'UV unavailable');
+    renderUvPanel();
+    return;
+  }
+
+  _uvWorkbenchState.meshPath = String(d.meshPath || primPath || '');
+  _uvWorkbenchState.data = d;
+
+  if (opts.fit || !Number.isFinite(_uvWorkbenchState.view.scale) || _uvWorkbenchState.view.scale <= 0) {
+    fitUvView();
+  } else {
+    renderUvPanel();
+  }
+
+  var faceCount = Number(d.faceCount || 0);
+  var msg = faceCount + ' faces';
+  if (d.meshPath && d.meshPath !== primPath) msg += ' (' + d.meshPath + ')';
+  _setUvWorkbenchStatus(msg);
+}
 
 // ── DCC commands ──────────────────────────────────────────────────────────
 async function createPrim(type, parent) { closeContextMenu();
@@ -3002,6 +3478,7 @@ async function selectPrimByPath(path, opts) {
   if (!opts.skipMaterial) loadMaterialPanel(path, tc);
   if (!opts.skipNode && _nodeWorkbenchState.open) loadNodePanel(path, { forceRender: false });
   if (!opts.skipCurve && window._curvePanelOpen) loadCurvePanel(path, tc);
+  if (!opts.skipUv && _uvWorkbenchState.open) loadUvPanel(path, { fit: false });
 }
 window.selectPrimByPath = selectPrimByPath;
 

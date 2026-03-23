@@ -45,6 +45,10 @@ Branch: `develop`
     - `POST /api/node_graph/disconnect`
     - `POST /api/node_graph/set_input`
   - quick action when no material: `+ Create & Bind PreviewSurface`
+- Phase 4.2 UV Editor MVP started:
+  - backend: `GET /api/prim_uv/{primPath}` (mesh resolution from Xform/Scope, primvar selection/fallback, face-loop UV payload)
+  - frontend: dedicated `UV Editor` workbench (`Split/Detached/Fullscreen`) with Canvas2D wireframe preview
+  - interactions: fit, pan, zoom, flip-V, primvar field (`st` by default)
 - External reference inspected: `cubiq/Mellon`
   - React Flow UX cues used as target for next polish pass (readability/controls/minimap style).
 
@@ -97,7 +101,11 @@ Branch: `develop`
    - harden detached/split/fullscreen behavior under heavy scene reloads
    - add advanced UX: minimap, context add menu, multi-select node ops
 2. UV Editor web MVP (Phase 4.2)
-   - basic UV display and transform tools
+   - [DONE] dedicated UV workbench (`Split/Detached/Fullscreen`) in viewport overlay
+   - [DONE] backend endpoint `GET /api/prim_uv/{primPath}?primvar=st&max_faces=...`
+   - [DONE] Canvas2D UV wireframe display + fit + pan/zoom + primvar input + flip V
+   - [TODO] UV face/vertex interactive selection
+   - [TODO] UV transforms (translate/rotate/scale) authoring
 3. MaterialX / vendor material workflows
    - dedicated editor(s) beyond UsdPreviewSurface
    - conversion/bridging strategy where possible
@@ -122,6 +130,7 @@ Branch: `develop`
 - Stage info: `/api/stage/info`
 - Prim at time: `/api/prim/{path}?time=...`
 - Samples: `/api/prim_samples/{path}`
+- UV data: `/api/prim_uv/{path}?primvar=st&max_faces=8000`
 - Material ops:
   - `/api/material/{primPath}` (inspect binding + shader ids + preview params + texture connections)
   - `/api/material/bind` (create/bind material with purpose/strength)

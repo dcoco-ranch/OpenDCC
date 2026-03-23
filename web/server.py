@@ -1536,6 +1536,279 @@ async def prim_detail(prim_path: str, time: Optional[float] = None):
     return {**d, "query_time": time, "attributes": attrs}
 
 
+def _uv_pair_from_value(v: Any) -> Optional[list[float]]:
+    try:
+        if hasattr(v, "__len__") and len(v) >= 2:
+            return [float(v[0]), float(v[1])]
+    except Exception:
+        pass
+    try:
+        return [float(v[0]), float(v[1])]
+    except Exception:
+        return None
+
+
+def _resolve_mesh_prim_for_uv(prim):
+    """Return a mesh prim for UV extraction.
+
+    If the selected prim is not a mesh (Xform/Scope), walk descendants first,
+    then a short parent fallback chain.
+    """
+    from pxr import UsdGeom
+
+    if prim and prim.IsValid() and prim.IsA(UsdGeom.Mesh):
+        return prim
+
+    queue = []
+    if prim and prim.IsValid():
+        queue.append(prim)
+
+    seen: set[str] = set()
+    visit_limit = 6000
+
+    while queue and len(seen) < visit_limit:
+        cur = queue.pop(0)
+        key = str(cur.GetPath())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if cur.IsA(UsdGeom.Mesh):
+            return cur
+
+        try:
+            for c in cur.GetChildren():
+                if c and c.IsValid():
+                    queue.append(c)
+        except Exception:
+            pass
+
+    cur = prim
+    hops = 0
+    while cur and cur.IsValid() and hops < 8:
+        try:
+            cur = cur.GetParent()
+        except Exception:
+            break
+        hops += 1
+        if cur and cur.IsValid() and cur.IsA(UsdGeom.Mesh):
+            return cur
+
+    return None
+
+
+@app.get("/api/prim_uv/{prim_path:path}")
+async def prim_uv(prim_path: str, primvar: str = "st", time: Optional[float] = None, max_faces: int = 8000):
+    """Extract UV face loops for a mesh (UV Editor MVP viewport).
+
+    Returns lightweight polyline data ready for Canvas2D rendering.
+    """
+    full_path = "/" + prim_path.lstrip("/")
+
+    stage = _current_stage()
+    if not stage:
+        return {"ok": False, "path": full_path, "error": "no stage"}
+
+    from pxr import Sdf, Usd, UsdGeom
+
+    prim = stage.GetPrimAtPath(Sdf.Path(full_path))
+    if not prim or not prim.IsValid():
+        raise HTTPException(status_code=404, detail=f"Prim not found: {full_path}")
+
+    mesh_prim = _resolve_mesh_prim_for_uv(prim)
+    if not mesh_prim:
+        return {"ok": False, "path": full_path, "error": "No mesh found under selected prim"}
+
+    mesh = UsdGeom.Mesh(mesh_prim)
+    tc = Usd.TimeCode.Default() if time is None else Usd.TimeCode(float(time))
+
+    counts = list(mesh.GetFaceVertexCountsAttr().Get(tc) or [])
+    fvi = list(mesh.GetFaceVertexIndicesAttr().Get(tc) or [])
+    if not counts or not fvi:
+        return {
+            "ok": False,
+            "path": full_path,
+            "meshPath": str(mesh_prim.GetPath()),
+            "error": "Mesh has no face topology",
+        }
+
+    max_faces = max(1, min(int(max_faces), 50000))
+
+    primvar_name = str(primvar or "").strip() or "st"
+    pva = UsdGeom.PrimvarsAPI(mesh_prim)
+    pv = pva.GetPrimvar(primvar_name)
+
+    def _is_valid_primvar(pv_obj) -> bool:
+        try:
+            return bool(pv_obj and pv_obj.GetAttr() and pv_obj.GetAttr().IsValid())
+        except Exception:
+            return False
+
+    if not _is_valid_primvar(pv):
+        for cand in ("st", "uv", "map1"):
+            cpv = pva.GetPrimvar(cand)
+            if _is_valid_primvar(cpv):
+                pv = cpv
+                primvar_name = cand
+                break
+
+    if not _is_valid_primvar(pv):
+        return {
+            "ok": False,
+            "path": full_path,
+            "meshPath": str(mesh_prim.GetPath()),
+            "error": f"No UV primvar found (requested: {primvar_name})",
+        }
+
+    try:
+        uv_values = list(pv.Get(tc) or [])
+    except Exception:
+        uv_values = []
+
+    if not uv_values:
+        return {
+            "ok": False,
+            "path": full_path,
+            "meshPath": str(mesh_prim.GetPath()),
+            "primvar": primvar_name,
+            "error": "UV primvar has no values",
+        }
+
+    idx_values: list[int] = []
+    try:
+        if pv.IsIndexed():
+            idx_values = list(pv.GetIndices(tc) or [])
+    except Exception:
+        idx_values = []
+
+    interpolation = str(pv.GetInterpolation() or "")
+    interp_l = interpolation.lower()
+
+    total_fv = sum(max(0, int(c or 0)) for c in counts)
+    max_vidx = max([int(i) for i in fvi], default=-1)
+
+    if interp_l in {"facevarying", "face_varying"}:
+        mode = "faceVarying"
+    elif interp_l in {"vertex", "varying"}:
+        mode = "vertex"
+    elif interp_l == "uniform":
+        mode = "uniform"
+    elif interp_l == "constant":
+        mode = "constant"
+    else:
+        if len(uv_values) == total_fv:
+            mode = "faceVarying"
+        elif len(uv_values) > max_vidx >= 0:
+            mode = "vertex"
+        elif len(uv_values) >= len(counts):
+            mode = "uniform"
+        else:
+            mode = "constant"
+
+    def _uv_for_raw_index(raw_idx: Optional[int]) -> Optional[list[float]]:
+        if raw_idx is None:
+            return None
+        try:
+            i = int(raw_idx)
+        except Exception:
+            return None
+        if i < 0:
+            return None
+
+        if idx_values:
+            if i >= len(idx_values):
+                return None
+            try:
+                i = int(idx_values[i])
+            except Exception:
+                return None
+
+        if i < 0 or i >= len(uv_values):
+            return None
+        return _uv_pair_from_value(uv_values[i])
+
+    faces: list[list[float]] = []
+    cursor = 0
+    min_u = float("inf")
+    max_u = float("-inf")
+    min_v = float("inf")
+    max_v = float("-inf")
+
+    for fi, count in enumerate(counts):
+        n = int(count or 0)
+        if n <= 0:
+            continue
+
+        if len(faces) >= max_faces:
+            break
+
+        poly: list[float] = []
+        for j in range(n):
+            fv_idx = cursor + j
+
+            raw_idx: Optional[int]
+            if mode == "faceVarying":
+                raw_idx = fv_idx
+            elif mode == "vertex":
+                raw_idx = int(fvi[fv_idx]) if fv_idx < len(fvi) else None
+            elif mode == "uniform":
+                raw_idx = fi
+            else:  # constant
+                raw_idx = 0
+
+            uv = _uv_for_raw_index(raw_idx)
+            if not uv:
+                continue
+
+            u = float(uv[0])
+            v = float(uv[1])
+            poly.extend([u, v])
+
+            if u < min_u:
+                min_u = u
+            if u > max_u:
+                max_u = u
+            if v < min_v:
+                min_v = v
+            if v > max_v:
+                max_v = v
+
+        if len(poly) >= 6:
+            faces.append(poly)
+
+        cursor += n
+
+    if not faces:
+        return {
+            "ok": False,
+            "path": full_path,
+            "meshPath": str(mesh_prim.GetPath()),
+            "primvar": primvar_name,
+            "error": "Failed to decode UV face loops",
+        }
+
+    if not all(map(lambda x: x != float("inf") and x != float("-inf"), [min_u, max_u, min_v, max_v])):
+        min_u, max_u, min_v, max_v = 0.0, 1.0, 0.0, 1.0
+
+    return {
+        "ok": True,
+        "path": full_path,
+        "meshPath": str(mesh_prim.GetPath()),
+        "primvar": primvar_name,
+        "interpolation": mode,
+        "faceCount": len(counts),
+        "drawFaceCount": len(faces),
+        "truncated": len(faces) < len(counts),
+        "bounds": {
+            "minU": float(min_u),
+            "maxU": float(max_u),
+            "minV": float(min_v),
+            "maxV": float(max_v),
+        },
+        "faces": faces,
+    }
+
+
 # ── Prim time samples (Curve Editor support) ──────────────────────────────────
 
 @app.get("/api/prim_samples/{prim_path:path}")

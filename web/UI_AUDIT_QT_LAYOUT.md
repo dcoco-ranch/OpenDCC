@@ -38,6 +38,7 @@ Le paradigme Qt est orienté **panneaux spécialisés**, dockables, avec layouts
 ## Ajustements appliqués côté Web
 
 - Curve Editor déplacé dans un **panel séparé** (`#curve-editor`), toggle via bouton `Curve Editor`.
+- UV Editor MVP ajouté en **workbench dédié** (`#uv-workbench`) avec modes `Split/Detached/Fullscreen`.
 - Properties conserve uniquement les infos d'inspection prim/material.
 - Sections `Geometry` et `Other` dans Properties: **repliées par défaut**.
 - Bouton `↻ Refresh` dans Properties (rafraîchissement on-demand).
