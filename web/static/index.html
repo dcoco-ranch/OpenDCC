@@ -2430,6 +2430,13 @@ function initViewportPicking() {
     var mainCam = window._threeCamera;
     if (!mainCam || !usdRoot) { console.log('[pick] no cam/root'); return; }
 
+    try {
+      if (window._threeScene) window._threeScene.updateMatrixWorld(true);
+      else usdRoot.updateMatrixWorld(true);
+      mainCam.updateMatrixWorld(true);
+      if (pickCtx && pickCtx.camera && pickCtx.camera !== mainCam) pickCtx.camera.updateMatrixWorld(true);
+    } catch (_) {}
+
     function _raycastFrom(ndcX, ndcY, cam, roots) {
       if (!cam || !roots || !roots.length) return [];
       mouse.x = ndcX;
@@ -2437,6 +2444,43 @@ function initViewportPicking() {
       raycaster.setFromCamera(mouse, cam);
       try { return raycaster.intersectObjects(roots, true) || []; }
       catch (_) { return []; }
+    }
+
+    function _bboxFallbackPick(ndcX, ndcY, cam, root) {
+      if (!cam || !root) return [];
+
+      mouse.x = ndcX;
+      mouse.y = ndcY;
+      raycaster.setFromCamera(mouse, cam);
+
+      var box = new T.Box3();
+      var p = new T.Vector3();
+      var bestObj = null;
+      var bestDist = Infinity;
+
+      root.traverse(function(obj) {
+        if (!obj || !obj.isMesh || !obj.visible || !obj.geometry) return;
+
+        var geom = obj.geometry;
+        if (!geom.boundingBox) {
+          try { geom.computeBoundingBox(); } catch (_) { return; }
+        }
+        if (!geom.boundingBox) return;
+
+        box.copy(geom.boundingBox).applyMatrix4(obj.matrixWorld);
+        var ip = raycaster.ray.intersectBox(box, p);
+        if (!ip) return;
+
+        var d = raycaster.ray.origin.distanceTo(ip);
+        if (!Number.isFinite(d)) return;
+
+        if (d < bestDist) {
+          bestDist = d;
+          bestObj = obj;
+        }
+      });
+
+      return bestObj ? [{ object: bestObj, distance: bestDist }] : [];
     }
 
     var tries = [];
@@ -2469,6 +2513,19 @@ function initViewportPicking() {
         if (h2 && h2.length) {
           hits = h2;
           used = t2.tag + ':scene';
+          break;
+        }
+      }
+    }
+
+    // Last-resort fallback for scenes where triangle raycast misses (e.g. specific delegates).
+    if (!hits.length) {
+      for (var tk = 0; tk < tries.length; tk++) {
+        var t3 = tries[tk];
+        var hb = _bboxFallbackPick(t3.ndcX, t3.ndcY, t3.cam, usdRoot);
+        if (hb && hb.length) {
+          hits = hb;
+          used = t3.tag + ':bbox';
           break;
         }
       }
